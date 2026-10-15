@@ -39,6 +39,17 @@ const EXISTING: ExistingState = {
 };
 
 const master = (...rows: Values[]) => validateMaster(file(MASTER_HEADERS, rows), EXISTING);
+
+/** The generated template with its documented example rows typed onto the data sheet (as a user would). */
+async function templateWithExamples(kind: keyof typeof TEMPLATES): Promise<Buffer> {
+  const ExcelJS = (await import('exceljs')).default;
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load((await buildTemplate(kind)) as unknown as ArrayBuffer);
+  const ws = wb.getWorksheet(TEMPLATES[kind].sheet)!;
+  const cols = TEMPLATES[kind].columns;
+  for (let i = 0; i < cols[0].example.length; i++) ws.addRow(cols.map((c) => c.example[i]));
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
 const owners = (...rows: Values[]) => validateOwners(file(OWNER_HEADERS, rows), EXISTING);
 const pick = (issues: Issue[]) => issues.map(({ row, column, code }) => ({ row, column, code }));
 
@@ -94,8 +105,15 @@ describe('parseUpload', () => {
       { row: 5, values: { CC_Code: 'IN-ENG-102', CC_Alias: 'Sim' } },
     ]);
   });
-  it('reads the generated .xlsx template', async () => {
-    const parsed = await parseUpload('t.xlsx', await buildTemplate('master'), TEMPLATES.master.sheet);
+  it('reads the generated .xlsx templates: header row only, no example data rows', async () => {
+    for (const kind of ['master', 'owners', 'financials'] as const) {
+      const parsed = await parseUpload('t.xlsx', await buildTemplate(kind), TEMPLATES[kind].sheet);
+      expect(parsed.headers, kind).toEqual(TEMPLATES[kind].columns.map((c) => c.key));
+      expect(parsed.rows, kind).toEqual([]);
+    }
+  });
+  it('reads rows entered on the template data sheet with spreadsheet row numbers', async () => {
+    const parsed = await parseUpload('t.xlsx', await templateWithExamples('master'), TEMPLATES.master.sheet);
     expect(parsed.headers).toEqual(MASTER_HEADERS);
     expect(parsed.rows.map((r) => r.values.CC_Code)).toEqual(['IN-ENG-104', 'US-SAL-602']);
     expect(parsed.rows[0].row).toBe(2);
@@ -464,8 +482,20 @@ describe('upload workflow (stage -> publish)', () => {
     ]);
   });
 
-  it('the generated .xlsx template stages cleanly', async () => {
-    const res = await stage('master', 'SolidPro_CC_Master_Template.xlsx', await buildTemplate('master'));
+  it('an unchanged template is rejected as an empty file and changes nothing', async () => {
+    const before = await asSuper(db, 'select count(*)::int as n from ccp.cost_centres');
+    for (const kind of ['master', 'owners', 'financials'] as const) {
+      const data = await buildTemplate(kind);
+      const res = await withUserOn(db, KAVYA, (tx) => stageUpload(tx, KAVYA, kind, TEMPLATES[kind].fileName, data));
+      expect(res.status, kind).toBe('Rejected');
+      expect(res.errors.map((e) => e.code), kind).toEqual(['EMPTY_FILE']);
+      await expect(publish(res.batchId), kind).rejects.toThrow(/Upload is Rejected/);
+    }
+    expect(await asSuper(db, 'select count(*)::int as n from ccp.cost_centres')).toEqual(before);
+  });
+
+  it('the template with its example rows filled in stages cleanly and publishes', async () => {
+    const res = await stage('master', 'SolidPro_CC_Master_Template.xlsx', await templateWithExamples('master'));
     expect(res.errors).toEqual([]);
     expect(res.status).toBe('Validated');
     expect(res.summary).toEqual({ created: 2, updated: 0, unchanged: 0 });
