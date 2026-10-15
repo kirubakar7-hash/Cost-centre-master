@@ -123,8 +123,10 @@ export function validateMaster(file: ParsedFile, existing: ExistingState): Valid
   }
 
   const known = new Set(existing.costCentres.map((c) => c.cc_code));
+  const warned = new Set<string>(); // one warning per code, even if the code is duplicated in the file
   for (const r of records) {
-    if (r.status === 'Active' && !owned.has(r.cc_code) && !known.has(r.cc_code)) {
+    if (r.cc_code && r.status === 'Active' && !owned.has(r.cc_code) && !known.has(r.cc_code) && !warned.has(r.cc_code)) {
+      warned.add(r.cc_code);
       warnings.push({ row: seenCode.get(r.cc_code) ?? null, column: null, code: 'NEEDS_OWNER', message: `New cost centre ${r.cc_code} needs an owner mapping upload.` });
     }
   }

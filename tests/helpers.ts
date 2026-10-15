@@ -15,6 +15,13 @@ export async function freshDb(): Promise<Driver> {
   return driver;
 }
 
+/** Reset an existing database to the freshly seeded state (cheaper than a new PGlite instance). */
+export async function resetDb(driver: Driver): Promise<void> {
+  await driver.exec('drop schema if exists ccp cascade');
+  await migrate(driver);
+  await seed(driver);
+}
+
 /** Run as the privileged (migration) connection — bypasses RLS. */
 export function asSuper<T = Row>(driver: Driver, sql: string, params?: unknown[]): Promise<T[]> {
   return driver.transaction((tx) => tx.query<T>(sql, params));
