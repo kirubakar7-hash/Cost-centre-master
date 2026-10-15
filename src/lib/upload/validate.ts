@@ -152,7 +152,7 @@ export function validateOwners(file: ParsedFile, existing: ExistingState): Valid
     const head = (v.BU_Head_Email ?? '').trim().toLowerCase();
 
     if (!code) err('CC_Code', 'REQUIRED', 'CC_Code is required.');
-    else if (!status.has(code)) err('CC_Code', 'UNKNOWN_CC', `${code} is not in the cost centre master. Upload the master first.`);
+    else if (!status.has(code)) err('CC_Code', 'UNKNOWN_CC', `${code} is not in the cost centre master. Publish a master upload with this code first.`);
     else if (status.get(code) === 'Inactive') err('CC_Code', 'INACTIVE_WITH_OWNER', `${code} is Inactive — an inactive cost centre cannot have an owner.`);
     if (code && seen.has(code)) err('CC_Code', 'DUPLICATE_CODE', `${code} appears more than once (also row ${seen.get(code)}).`);
     else if (code) seen.set(code, row);

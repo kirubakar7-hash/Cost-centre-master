@@ -8,6 +8,8 @@ export interface ParsedFile {
   rows: ParsedRow[];
 }
 
+export class UploadParseError extends Error {}
+
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const MAX_ROWS = 5000;
 
@@ -79,10 +81,14 @@ function toParsed(matrix: string[][]): ParsedFile {
 export async function parseUpload(fileName: string, data: Buffer, preferredSheet?: string): Promise<ParsedFile> {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.csv')) return toParsed(parseCsv(data.toString('utf8')));
-  if (!lower.endsWith('.xlsx')) throw new Error('Only .xlsx or .csv files are accepted.');
+  if (!lower.endsWith('.xlsx')) throw new UploadParseError('Only .xlsx or .csv files are accepted.');
   const ExcelJS = (await import('exceljs')).default;
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(data as unknown as ArrayBuffer);
+  try {
+    await wb.xlsx.load(data as unknown as ArrayBuffer);
+  } catch {
+    throw new UploadParseError('The file could not be read as an Excel workbook.');
+  }
   const ws = (preferredSheet && wb.getWorksheet(preferredSheet)) || wb.worksheets[0];
   if (!ws) return { headers: [], rows: [] };
   const matrix: string[][] = [];

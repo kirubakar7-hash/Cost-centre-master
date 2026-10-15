@@ -1,6 +1,7 @@
 import { withUser } from '@/lib/db';
 import { errorResponse, requireFinanceApi } from '@/lib/session';
-import { discardUpload, publishUpload } from '@/lib/upload/service';
+import { UploadParseError } from '@/lib/upload/parse';
+import { UploadError, discardUpload, publishUpload } from '@/lib/upload/service';
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -18,7 +19,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const result = await withUser(user.email, (tx) => publishUpload(tx, id), { batchId: id });
     return Response.json(result, { status: result.published ? 200 : 422 });
   } catch (err) {
-    if (err instanceof Error && !('status' in err)) return Response.json({ error: err.message }, { status: 400 });
+    if (err instanceof UploadError || err instanceof UploadParseError) return Response.json({ error: err.message }, { status: 400 });
     return errorResponse(err);
   }
 }

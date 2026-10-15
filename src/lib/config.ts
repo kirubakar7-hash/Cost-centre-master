@@ -18,11 +18,22 @@ export function isAllowedEmail(email: string | null | undefined): boolean {
 
 export const financeContactEmail = () => process.env.FINANCE_CONTACT_EMAIL ?? 'finance@solidpro-es.com';
 
-/** Demo login (pick a seeded user) — never available on a Vercel production deployment. */
+/**
+ * Demo login (pick a seeded user, no password). Only ever available against the
+ * embedded PGlite demo database — never when DATABASE_URL points at real data,
+ * and never on a Vercel production deployment.
+ */
 export function demoLoginEnabled(): boolean {
-  return process.env.AUTH_DEMO_MODE === 'true' && process.env.VERCEL_ENV !== 'production';
+  return (
+    process.env.AUTH_DEMO_MODE === 'true' && !process.env.DATABASE_URL && process.env.VERCEL_ENV !== 'production'
+  );
 }
 
+/** SSO is only offered when the tenant is pinned (fail closed: no multi-tenant "common" endpoint). */
 export function entraConfigured(): boolean {
-  return Boolean(process.env.AUTH_MICROSOFT_ENTRA_ID_ID && process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET);
+  return Boolean(
+    process.env.AUTH_MICROSOFT_ENTRA_ID_ID &&
+      process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET &&
+      process.env.AUTH_MICROSOFT_ENTRA_ID_TENANT_ID,
+  );
 }

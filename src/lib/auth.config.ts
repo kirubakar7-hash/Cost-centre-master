@@ -12,7 +12,7 @@ const tenantId = process.env.AUTH_MICROSOFT_ENTRA_ID_TENANT_ID;
 const providers: NextAuthConfig['providers'] = [
   MicrosoftEntraID({
     // Single-tenant issuer: only accounts from the SolidPro Entra tenant can sign in.
-    issuer: tenantId ? `https://login.microsoftonline.com/${tenantId}/v2.0` : process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER,
+    issuer: `https://login.microsoftonline.com/${tenantId ?? 'tenant-id-not-configured'}/v2.0`,
     authorization: { params: { scope: 'openid profile email' } },
     // Do not fetch the Graph profile photo (keeps the session cookie small).
     profile(profile) {
@@ -45,9 +45,10 @@ export const authConfig = {
   callbacks: {
     async signIn({ user, account, profile }) {
       if (account?.provider === 'microsoft-entra-id') {
-        // Defence in depth: token must come from our tenant (blocks the "nOAuth" email-claim trick)
-        if (tenantId && profile && (profile as { tid?: string }).tid !== tenantId) return false;
+        // Fail closed: token must come from our tenant (blocks the "nOAuth" email-claim trick)
+        if (!tenantId || (profile as { tid?: string } | undefined)?.tid !== tenantId) return false;
       }
+      if (account?.provider === 'demo' && !demoLoginEnabled()) return false;
       return isAllowedEmail(user?.email);
     },
     async jwt({ token, user }) {

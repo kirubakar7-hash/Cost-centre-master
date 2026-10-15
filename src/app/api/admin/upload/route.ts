@@ -1,7 +1,7 @@
 import { withUser } from '@/lib/db';
 import { errorResponse, requireFinanceApi } from '@/lib/session';
-import { MAX_UPLOAD_BYTES } from '@/lib/upload/parse';
-import { stageUpload } from '@/lib/upload/service';
+import { MAX_UPLOAD_BYTES, UploadParseError } from '@/lib/upload/parse';
+import { UploadError, stageUpload } from '@/lib/upload/service';
 
 export async function POST(req: Request) {
   try {
@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     const result = await withUser(user.email, (tx) => stageUpload(tx, user.email, kind, file.name, data));
     return Response.json(result);
   } catch (err) {
-    if (err instanceof Error && !('status' in err)) return Response.json({ error: err.message }, { status: 400 });
+    if (err instanceof UploadError || err instanceof UploadParseError) return Response.json({ error: err.message }, { status: 400 });
     return errorResponse(err);
   }
 }

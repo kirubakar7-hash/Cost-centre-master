@@ -7,6 +7,9 @@ import { validateMaster, validateOwners, type ExistingState, type Issue, type Ma
 
 export type MasterKind = 'master' | 'owners';
 
+/** Expected, user-correctable problems (shown as 400). Anything else is a 500. */
+export class UploadError extends Error {}
+
 async function loadExisting(tx: Tx): Promise<ExistingState> {
   const costCentres = await tx.query<{ cc_code: string; cc_alias: string; status: string }>(
     'select cc_code, cc_alias, status from ccp.cost_centres',
@@ -48,7 +51,7 @@ export interface StageResult {
 
 export async function stageUpload(tx: Tx, user: string, kind: MasterKind, fileName: string, data: Buffer): Promise<StageResult> {
   const file = await parseUpload(fileName, data, TEMPLATES[kind].sheet);
-  if (file.rows.length > MAX_ROWS) throw new Error(`Too many rows (max ${MAX_ROWS}).`);
+  if (file.rows.length > MAX_ROWS) throw new UploadError(`Too many rows (max ${MAX_ROWS}).`);
   const existing = await loadExisting(tx);
   const { records, errors, warnings } = runValidation(kind, file, existing);
   const summary = errors.length ? { created: 0, updated: 0, unchanged: 0 } : await diffSummary(tx, kind, records);
@@ -75,13 +78,15 @@ export async function publishUpload(tx: Tx, batchId: string) {
   const [batch] = await tx.query<{ kind: MasterKind; status: string; payload: Parameters<typeof validateMaster>[0] }>(
     'select kind, status, payload from ccp.upload_batches where id = $1 for update', [batchId],
   );
-  if (!batch) throw new Error('Upload not found.');
-  if (batch.status !== 'Validated') throw new Error(`Upload is ${batch.status} and cannot be published.`);
+  if (!batch) throw new UploadError('Upload not found.');
+  if (batch.status !== 'Validated') throw new UploadError(`Upload is ${batch.status} and cannot be published.`);
 
   const { records, errors } = runValidation(batch.kind, batch.payload, await loadExisting(tx));
   if (errors.length) {
     await tx.query(`update ccp.upload_batches set status = 'Rejected', errors = $2::jsonb, error_count = $3 where id = $1`,
       [batchId, JSON.stringify(errors), errors.length]);
+    await tx.query(`select ccp.log_event('UPLOAD_REJECTED', 'upload_batch', $1, $2::jsonb)`,
+      [batchId, JSON.stringify({ stage: 'publish', errors: errors.length })]);
     return { published: false as const, errors };
   }
   const summary = await diffSummary(tx, batch.kind, records);

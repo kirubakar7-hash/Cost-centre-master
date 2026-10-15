@@ -123,12 +123,12 @@ Security is layered, so no single control has to be perfect:
 | | The token's `tid` claim must equal `AUTH_MICROSOFT_ENTRA_ID_TENANT_ID`. This blocks the "nOAuth" attack, where a user from another tenant sets an `email` claim on our domain. | `signIn` callback |
 | | The email (`email`, or `preferred_username` if there is no email) must be on `ALLOWED_EMAIL_DOMAINS`. It is checked at sign-in **and on every session refresh**. | `signIn` and `jwt` callbacks |
 | | Recommended: turn on **Assignment required** on the Entra Enterprise App, so that only members of a chosen security group can sign in. | Entra admin centre |
-| **Session** | Encrypted JWT cookie (Auth.js: HttpOnly, Secure, SameSite=Lax) with a **30-minute rolling idle timeout**. `maxAge` is 1800 s and the proxy re-issues the cookie on each request. There is also a **10-hour absolute limit** and a client-side idle timer that signs the user out after 30 minutes without input. | `config.ts`, `proxy.ts`, `IdleTimeout.tsx` |
+| **Session** | Encrypted JWT cookie (Auth.js: HttpOnly, SameSite=Lax, Secure on HTTPS) with a **30-minute rolling idle timeout**. `maxAge` is 1800 s and the proxy re-issues the cookie on each request. There is also a **10-hour absolute limit** and a client-side idle timer that signs the user out after 30 minutes without input. | `config.ts`, `proxy.ts`, `IdleTimeout.tsx` |
 | **Edge** | The proxy requires a session on every path except `/login` and `/api/auth/*`. It sets a nonce-based CSP with `strict-dynamic` and `frame-ancestors 'none'`. `next.config.ts` adds HSTS (2 years, preload), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy` and `Permissions-Policy`, and removes `X-Powered-By`. Pages are marked `noindex`. | `proxy.ts`, `next.config.ts` |
 | **Server** | Roles come from `ccp.my_roles()` on every request and are never cached in the cookie. Admin pages redirect non-Finance users. Admin APIs return `403` and log `ACCESS_DENIED`. Uploads are checked for type (`.xlsx`/`.csv`), size (5 MB) and row count (5,000). IDs are checked to be UUIDs. Search and template responses are `Cache-Control: private, no-store`. | `session.ts`, `app/api/**` |
 | **Database** | Each request runs in a transaction as `cc_app`, a role with no `BYPASSRLS`, no `DELETE` on cost centres and no direct write access to the audit log, using `set_config('app.user_email', …)`. **RLS policies decide which rows each user gets** from `cc_access` and `cc_owners`, so a bug or a tampered request in the app cannot widen access. Schema `ccp` is not exposed through Supabase's REST API (the `anon` and `authenticated` roles are revoked). | `002_security.sql`, `db/core.ts` |
 | **Integrity** | Triggers block deletion of cost centres. Deactivating a cost centre removes its owner mapping, and that removal is audited. Every insert, update and delete on `cost_centres`, `cc_owners` and `cc_access` is written to `audit_log` with who, when, old and new values (only the changed fields) and the upload batch id. `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`, even from the privileged migration connection. | `002_security.sql` |
-| **Events** | `LOGIN`, `LOGIN_DENIED`, `LOGOUT` (sign-out or idle), `ACCESS_DENIED`, `TEMPLATE_DOWNLOAD`, `UPLOAD_VALIDATED`, `UPLOAD_REJECTED`, `UPLOAD_PUBLISHED` and `UPLOAD_DISCARDED` are logged through `ccp.log_event()`, which accepts only these actions and always records the caller's identity. | `auth.ts`, `logout/route.ts`, `upload/service.ts` |
+| **Events** | `LOGIN`, `LOGIN_DENIED`, `LOGOUT` (sign-out or idle), `ACCESS_DENIED`, `TEMPLATE_DOWNLOAD`, `UPLOAD_VALIDATED`, `UPLOAD_REJECTED`, `UPLOAD_PUBLISHED` and `UPLOAD_DISCARDED` are logged through `ccp.log_event()`, which accepts only a fixed list of actions and always records the caller's identity. | `auth.ts`, `logout/route.ts`, `upload/service.ts` |
 
 **Excel library.** The portal uses **ExcelJS**, not SheetJS. The npm `xlsx` package (0.18.5) has
 unpatched vulnerabilities: prototype pollution (CVE-2023-30533) and ReDoS (CVE-2024-22363). The
@@ -177,11 +177,10 @@ Every variable is described in [`.env.example`](.env.example).
 | `AUTH_URL` | Production | auto-detected | Public URL, e.g. `https://costcentre.solidpro-engineering.com`. On Vercel, set it for **Production only**. |
 | `AUTH_MICROSOFT_ENTRA_ID_ID` | For SSO | — | Application (client) ID |
 | `AUTH_MICROSOFT_ENTRA_ID_SECRET` | For SSO | — | Client secret **value** |
-| `AUTH_MICROSOFT_ENTRA_ID_TENANT_ID` | For SSO (**always set**) | — | Directory (tenant) ID. Pins the issuer and turns on the `tid` check. If it is not set, Auth.js falls back to the multi-tenant `common` endpoint. |
-| `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | No | — | Issuer override, used only when the tenant ID is not set. Not recommended. |
+| `AUTH_MICROSOFT_ENTRA_ID_TENANT_ID` | For SSO (**always set**) | — | Directory (tenant) ID. Pins the issuer and turns on the `tid` check. Required: without it Microsoft sign-in is disabled (fail closed). |
 | `ALLOWED_EMAIL_DOMAINS` | No | `solidpro-es.com` | Comma-separated list of domains allowed to sign in. Owner, backup and BU-head emails in uploads must also use these domains. |
 | `FINANCE_CONTACT_EMAIL` | No | `finance@solidpro-es.com` | Shown when a search finds nothing |
-| `AUTH_DEMO_MODE` | No | `false` | `true` shows the demo-user picker with no password. It is always off when `VERCEL_ENV=production`. **Never enable it on any deployment connected to real data, previews included.** |
+| `AUTH_DEMO_MODE` | No | `false` | `true` shows the demo-user picker with no password. It only works with the embedded PGlite demo database: it is ignored whenever `DATABASE_URL` is set and when `VERCEL_ENV=production`. |
 | `DATABASE_URL` | Production | — (PGlite) | Postgres connection string. For Supabase, use the pooler string. **Do not add `?sslmode=`**, because it overrides the two SSL variables below. |
 | `DATABASE_POOL_MAX` | No | `5` | Connection pool size for each server instance |
 | `DATABASE_SSL` | No | on | Set to `false` to turn off TLS for a local Postgres. `sslmode=disable` in the URL does the same. |
@@ -342,6 +341,7 @@ Tests live in `tests/*.test.ts`. They use a fresh in-memory database with the re
 |---|---|
 | `tests/rls.test.ts` | Row-level security for every role, including tampered or direct SQL; write restrictions; no-delete; deactivation cascade; audit trail contents; append-only audit log; failed-search logging |
 | `tests/search.test.ts` | Term parsing; multi-word, partial and any-order search; code with or without dashes; owner, keyword, BU and department search; inactive cost centres excluded; LIKE and injection safety; **< 1 s with 510 cost centres** |
+| `tests/validate.test.ts` | Date and CSV/XLSX parsing (including the generated template); every master and owner-mapping validation rule and warning; `ALLOWED_EMAIL_DOMAINS`; the end-to-end upload workflow: reject, stage, publish with batch-id audit, re-validation at publish, discard, Finance-only, row limit |
 
 ## 12. Acceptance criteria
 
@@ -361,10 +361,10 @@ criterion is checked in the UAT smoke test ([§9](#9-deploy-to-vercel), step 6).
 | 9 | Employees see no financial data, even when calling the API directly or changing IDs. | RLS on `financials`, `allocations`, `comments`, `audit_log`, `upload_batches`, `failed_searches` | `rls.test.ts`: *Employee sees 0 rows in every protected table …* |
 | 10 | Owners see only their own cost centres, BU heads see their BU, and Finance and Management see everything. | `ccp.visible_cc_codes()` in the RLS policies | `rls.test.ts`: *Owner sees financials only …*, *backup owner …*, *BU head sees all Engineering …*, *Mgmt sees all …*, *Finance sees all …* |
 | 11 | Only Finance can change master data or use Admin. | RLS write policies; admin page redirect; admin APIs return `403` and log `ACCESS_DENIED` | `rls.test.ts`: *Mgmt cannot insert or update …*, *Non-finance users cannot …* |
-| 12 | Finance can download templates and upload the master and owner mapping as `.xlsx` or `.csv`. | `/api/admin/templates/[kind]`, `/api/admin/upload` | Manual. Templates in `templates/` are generated by `npm run templates`. |
-| 13 | An invalid file is rejected as a whole, with a row-by-row error report covering duplicate codes and aliases, missing owner or backup, external emails, an inactive cost centre with an owner, and bad dates. Nothing is partly loaded. | `lib/upload/validate.ts`; the batch is marked `Rejected` | Covered by the validation rules in `validate.ts`. **Unit tests are pending.** |
-| 14 | A clean file shows a preview (new, updated, unchanged and warnings) and is then published or discarded. Publishing validates the file again against the current data. | `lib/upload/service.ts` | **Tests pending.** Manual. |
-| 15 | Cost centres cannot be deleted. Deactivation needs a close date and removes the owner mapping. | `cost_centres_no_delete` trigger, CHECK constraints, `tg_cc_deactivated` | `rls.test.ts`: *Nobody can delete a cost centre …*, *Deactivating a cost centre removes its owner mapping …* |
+| 12 | Finance can download templates and upload the master and owner mapping as `.xlsx` or `.csv`. | `/api/admin/templates/[kind]`, `/api/admin/upload`; `npm run templates` writes the same files to `templates/` | `validate.test.ts`: *reads the generated .xlsx template*, *the generated .xlsx template stages cleanly*, *parseCsv …*, *rejects other file types* |
+| 13 | An invalid file is rejected as a whole, with a row-by-row error report covering duplicate codes and aliases, missing owner or backup, external emails, an inactive cost centre with an owner, and bad dates. Nothing is partly loaded. | `lib/upload/validate.ts`; the batch is marked `Rejected` | `validate.test.ts`: `validateMaster` and `validateOwners` suites (*duplicate codes …*, *alias already used …*, *cost centre with no backup owner*, *owner / backup / BU head not on the allowed domain*, *inactive cost centre cannot get an owner*, …); *a file with an error is Rejected and cannot be published* |
+| 14 | A clean file shows a preview (new, updated, unchanged and warnings) and is then published or discarded. Publishing validates the file again against the current data. | `lib/upload/service.ts` | `validate.test.ts`: *a clean master upload is Validated, then publish upserts and audits with the batch id*, *publish is blocked when the master changed after staging …*, *a validated upload can be discarded and then not published*, *only Finance can stage or publish* |
+| 15 | Cost centres cannot be deleted. Deactivation needs a close date and removes the owner mapping. | `cost_centres_no_delete` trigger, CHECK constraints, `tg_cc_deactivated` | `rls.test.ts`: *Nobody can delete a cost centre …*, *Deactivating a cost centre removes its owner mapping …*; `validate.test.ts`: *deactivating via a master upload removes the owner mapping; all audit rows carry the batch id* |
 | 16 | Every change is audited with who, what, when and the old and new values, and the audit log cannot be changed. | Audit triggers, `log_event()`, append-only triggers | `rls.test.ts`: *Finance can update a cost centre; audit_log records who …*, *audit_log is append-only …* |
 | 17 | The portal works on mobile and follows the SolidPro brand (Blue `#16469D`, Red `#E01A22`, Grey `#939597`, Maven Pro). | Responsive Tailwind layout and brand tokens in `globals.css` | Manual |
 | 18 | Security headers are sent. | CSP (nonce), HSTS, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy` | Manual (`curl -I`) |
@@ -395,8 +395,8 @@ criterion is checked in the UAT smoke test ([§9](#9-deploy-to-vercel), step 6).
 - **Sessions are not revoked centrally.** Disabling an Entra account blocks new sign-ins, but an open
   portal session lasts until the 30-minute idle or 10-hour absolute limit. Signing out of the portal
   does not sign the user out of Microsoft.
-- **The tenant ID is not enforced at startup.** If `AUTH_MICROSOFT_ENTRA_ID_TENANT_ID` is missing,
-  Auth.js uses the `common` endpoint and skips the `tid` check, leaving only the domain check. Always set it.
+- **SSO fails closed without a tenant ID.** If `AUTH_MICROSOFT_ENTRA_ID_TENANT_ID` is missing, the
+  Microsoft button is disabled and any Entra sign-in is rejected (no fallback to the multi-tenant endpoint).
 - **Database TLS.** There is no variable for a custom CA, and an `sslmode` in `DATABASE_URL` overrides
   `DATABASE_SSL_STRICT` ([§8](#8-supabase-setup)).
 - **The `npm run db:*` scripts do not load `.env.local`** ([§6](#6-environment-variables)).

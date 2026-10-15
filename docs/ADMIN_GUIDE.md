@@ -90,7 +90,7 @@ workbook up to date as the working copy.
 | `Type` | Yes | `Direct`, `Shared` or `Allocated` (any upper or lower case). |
 | `Keywords` | No | Words that employees might search for, separated by `;` or `,`. They are stored in lower case, e.g. `cad; solidworks; chennai`. |
 | `Status` | Yes | `Active` or `Inactive`. |
-| `Start_Date` | Yes | `YYYY-MM-DD`, `DD/MM/YYYY` or `DD-MM-YYYY`. **Day first, so the US format MM/DD is not supported.** |
+| `Start_Date` | Yes | `YYYY-MM-DD`, `DD/MM/YYYY` or `DD-MM-YYYY`, with a 4-digit year. **Day first, so the US format MM/DD is not supported.** Dots (`01.10.2026`) and `YYYY/MM/DD` are rejected. |
 | `Close_Date` | If Inactive | Required when Status is `Inactive`, and must be **empty** when Status is `Active`. It must be on or after `Start_Date`. |
 
 Tips
