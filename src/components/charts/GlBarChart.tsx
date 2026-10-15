@@ -73,7 +73,7 @@ export function GlBarChart({ data, ariaLabel }: { data: GlBarDatum[]; ariaLabel:
           <BarChart
             data={data}
             layout="vertical"
-            margin={{ top: 4, right: 12, bottom: 4, left: 0 }}
+            margin={{ top: 4, right: 22, bottom: 4, left: 0 }}
             barGap={2}
             barCategoryGap="22%"
           >

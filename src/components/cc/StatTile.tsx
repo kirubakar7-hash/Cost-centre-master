@@ -9,14 +9,16 @@ export function StatTile({
   value,
   sub,
   flagged = false,
+  className = '',
 }: {
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
   flagged?: boolean;
+  className?: string;
 }) {
   return (
-    <div className={`surface min-w-0 rounded-lg p-4 ${flagged ? 'border-l-4 !border-l-accent' : ''}`}>
+    <div className={`surface min-w-0 rounded-lg p-4 ${flagged ? 'border-l-4 !border-l-accent' : ''} ${className}`}>
       <div className="text-xs font-medium text-muted">{label}</div>
       <div
         className={`mt-1 break-words text-xl font-semibold leading-tight sm:text-2xl ${

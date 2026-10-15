@@ -60,7 +60,8 @@ export function TrendChart({ data, ariaLabel }: { data: TrendDatum[]; ariaLabel:
               tick={{ fill: theme.axis, fontSize: 11 }}
               axisLine={{ stroke: theme.grid }}
               tickLine={false}
-              interval={0}
+              interval="preserveStartEnd"
+              minTickGap={6}
             />
             <YAxis
               tickFormatter={(v: number) => fmtCompact(v)}

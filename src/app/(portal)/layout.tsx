@@ -12,6 +12,7 @@ export default async function PortalLayout({ children }: { children: React.React
   const user = await requireUser();
   const nav = [
     { href: '/', label: 'Cost Centre Finder', show: true },
+    { href: '/my', label: 'My Cost Centres', show: user.primaryRole !== 'Employee' },
     { href: '/admin', label: 'Admin', show: user.isFinance },
   ];
   return (
@@ -36,11 +37,6 @@ export default async function PortalLayout({ children }: { children: React.React
                 {n.label}
               </Link>
             ))}
-            {user.primaryRole !== 'Employee' && (
-              <span className="cursor-not-allowed rounded-md px-3 py-1.5 text-muted" title="Coming in Phase 2">
-                My Cost Centres
-              </span>
-            )}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-right">
             <div className="leading-tight">

@@ -74,24 +74,25 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
   const hasTrend = trend.some((t) => t.budget !== 0 || t.actual !== null);
   const flaggedGl = gl.filter((g) => g.flagged).length;
 
-  const master: { label: string; value: React.ReactNode }[] = [
+  const master: { label: string; value: React.ReactNode; wide?: boolean }[] = [
     { label: 'Business unit', value: detail.bu },
     { label: 'Department', value: detail.department },
     { label: 'Entity', value: detail.entity },
     { label: 'Type', value: detail.type },
     {
       label: 'Owner',
+      wide: true,
       value: detail.owner_name ? (
         <>
           {detail.owner_name}
-          {detail.owner_email && <span className="block break-all text-xs text-muted">{detail.owner_email}</span>}
+          {detail.owner_email && <span className="block text-xs text-muted [overflow-wrap:anywhere]">{detail.owner_email}</span>}
         </>
       ) : (
         '—'
       ),
     },
-    { label: 'Backup owner', value: <span className="break-all">{detail.backup_owner_email ?? '—'}</span> },
-    { label: 'BU head', value: <span className="break-all">{detail.bu_head_email ?? '—'}</span> },
+    { label: 'Backup owner', wide: true, value: <span className="[overflow-wrap:anywhere]">{detail.backup_owner_email ?? '—'}</span> },
+    { label: 'BU head', wide: true, value: <span className="[overflow-wrap:anywhere]">{detail.bu_head_email ?? '—'}</span> },
     {
       label: 'Status',
       value: (
@@ -127,7 +128,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
       <section aria-label="Cost centre details" className="surface rounded-lg p-4 sm:p-5">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm md:grid-cols-4">
           {master.map((m) => (
-            <div key={m.label} className="min-w-0">
+            <div key={m.label} className={`min-w-0 ${m.wide ? 'col-span-2 md:col-span-1' : ''}`}>
               <dt className="text-xs font-medium text-muted">{m.label}</dt>
               <dd className="mt-0.5 font-medium">{m.value}</dd>
             </div>
@@ -219,7 +220,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
                 ariaLabel={`Bar chart: year-to-date budget versus actual by GL group for ${detail.cc_code}, ${ytdRange}. The same figures are in the table below.`}
               />
             </div>
-            <div className="mt-6 overflow-x-auto">
+            <div className="relative mt-6 overflow-x-auto">
               <table className="w-full min-w-[880px] text-sm">
                 <caption className="sr-only">
                   Expense breakdown by GL group for {detail.cc_code}: {monthLabel} and year to date
@@ -229,7 +230,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
                     <th scope="col" rowSpan={2} className="py-1.5 pl-2 pr-3 text-left align-bottom font-medium">GL group</th>
                     <th scope="colgroup" colSpan={2} className="border-theme border-b px-3 text-center font-medium">{monthLabel}</th>
                     <th scope="colgroup" colSpan={4} className="border-theme border-b px-3 text-center font-medium">Year to date</th>
-                    <th scope="col" rowSpan={2} className="pl-3 text-right align-bottom font-medium">Outturn</th>
+                    <th scope="colgroup" className="border-theme border-b pl-3 text-right font-medium">Full year</th>
                   </tr>
                   <tr className="text-right">
                     <th scope="col" className="py-1.5 pr-3 font-medium">Budget</th>
@@ -238,6 +239,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
                     <th scope="col" className="pr-3 font-medium">Actual</th>
                     <th scope="col" className="pr-3 font-medium">Variance</th>
                     <th scope="col" className="pr-3 font-medium">Var %</th>
+                    <th scope="col" className="pl-3 font-medium">Outturn</th>
                   </tr>
                 </thead>
                 <tbody className="tabular-nums">
@@ -301,7 +303,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
             </div>
             <details className="mt-4 text-sm">
               <summary className="cursor-pointer font-semibold text-brand dark:text-brand-light">Monthly figures (table)</summary>
-              <div className="mt-2 overflow-x-auto">
+              <div className="relative mt-2 overflow-x-auto">
                 <table className="w-full min-w-[520px]">
                   <caption className="sr-only">Monthly budget versus actual, {fy.label}</caption>
                   <thead className="text-xs text-muted">

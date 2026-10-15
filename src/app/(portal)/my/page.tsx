@@ -98,6 +98,7 @@ export default async function MyCostCentresPage({ searchParams }: { searchParams
           />
           <StatTile label="Full-year budget" value={fmtAmount(total.fyBudget)} sub={fy.label} />
           <StatTile
+            className="col-span-2 lg:col-span-1"
             label="Full-year outturn"
             value={fmtAmount(total.outturn)}
             sub={`${fmtSigned(outturnVsBudget.amount)} (${fmtPct(outturnVsBudget.pct)}) vs FY budget`}
@@ -109,7 +110,7 @@ export default async function MyCostCentresPage({ searchParams }: { searchParams
       {showByBu && (
         <section aria-labelledby="bu-h" className="surface rounded-lg p-4 sm:p-5">
           <h2 id="bu-h" className="heading text-lg">By business unit</h2>
-          <div className="mt-3 overflow-x-auto">
+          <div className="relative mt-3 overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">
               <caption className="sr-only">Consolidated budget versus actual by business unit, as of {periodLabel(asOf)}</caption>
               <thead className="text-xs text-muted">
@@ -167,7 +168,7 @@ export default async function MyCostCentresPage({ searchParams }: { searchParams
             <span className={FLAG_TEXT} aria-hidden="true">▲▼</span> variance over ±10% of YTD budget. Select a code for details.
           </p>
         </div>
-        <div className="mt-3 overflow-x-auto">
+        <div className="relative mt-3 overflow-x-auto">
           <table className="w-full min-w-[860px] text-sm">
             <caption className="sr-only">Your cost centres, budget versus actual year to date as of {periodLabel(asOf)}</caption>
             <thead className="text-xs text-muted">
