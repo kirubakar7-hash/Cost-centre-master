@@ -174,13 +174,16 @@ async function reconcile(tx: Tx, batchId: string, periods: PeriodSummary[]): Pro
  * that has actuals. Returns the reconciliation; does not publish.
  */
 export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<string, number>) {
+  if (!makerCheckerEnabled()) await tx.query(`select set_config('app.maker_checker', 'off', true)`);
   const batch = await lockBatch(tx, batchId);
   if (batch.kind !== 'financials') throw new UploadError('Trial balance applies to Budget & Actuals uploads only.');
   const me = await currentUser(tx);
   if (makerCheckerEnabled() && batch.uploaded_by !== me)
     throw new UploadError('Only the preparer who uploaded the file can enter the trial balance.');
 
-  const { records } = validateFinancials(batch.payload, await loadFinancialsContext(tx));
+  const { records, errors } = validateFinancials(batch.payload, await loadFinancialsContext(tx));
+  if (errors.length)
+    throw new UploadError(`This file is no longer valid against the current data (${errors.length} error(s)). Discard it and upload again.`);
   const periods = summarizePeriods(records);
   const needed = new Set(periods.filter((p) => p.actualTotal !== null).map((p) => p.period));
   for (const [period, value] of Object.entries(totals)) {
@@ -209,6 +212,25 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
   const { records, errors } = validateFinancials(batch.payload, await loadFinancialsContext(tx));
   if (errors.length) return { published: false as const, errors };
   const periods = summarizePeriods(records);
+
+  // Stale-batch guard: never let an older upload overwrite a period that was
+  // published after this file was prepared.
+  const newer = await tx.query<{ period: string }>(
+    `select distinct e->>'period' as period
+       from ccp.upload_batches b, jsonb_array_elements(coalesce(b.summary->'periods', '[]'::jsonb)) e
+      where b.kind = 'financials' and b.status = 'Published' and b.id <> $1
+        and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
+        and e->>'period' = any ($2)`,
+    [batchId, periods.map((p) => p.period)],
+  );
+  if (newer.length) {
+    return {
+      published: false as const,
+      errors: [] as Issue[],
+      error: `Publishing blocked: ${newer.map((n) => n.period).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
+    };
+  }
+
   const recon = await reconcile(tx, batchId, periods);
   const blocked = recon.filter((r) => !r.matched);
   if (blocked.length) {
@@ -256,6 +278,8 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
  * then upserts. Audit rows written by the triggers carry the batch id.
  */
 export async function publishUpload(tx: Tx, batchId: string) {
+  // Tell the database-level segregation-of-duties trigger whether maker-checker is on
+  if (!makerCheckerEnabled()) await tx.query(`select set_config('app.maker_checker', 'off', true)`);
   const batch = await lockBatch(tx, batchId);
   const me = await currentUser(tx);
   if (makerCheckerEnabled() && batch.uploaded_by === me)

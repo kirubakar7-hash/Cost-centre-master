@@ -517,9 +517,13 @@ describe('financial read model (src/lib/financials.ts)', () => {
     expect(await asUser(VIKRAM, (tx) => getDetail(tx, 'IN-SAL-501'))).toBeNull();
   });
 
+  // Inactive cost centres appear only when they have figures in the fiscal year
+  const LISTED = () => ALL_CODES.filter((c) => c !== 'IN-ENG-199');
+
   it('management: consolidate() by BU adds up to the rows and to an independent SQL total', async () => {
     const rows = await asUser(RAJESH, (tx) => listMyCostCentres(tx, AS_OF));
-    expect(rows.map((r) => r.cc_code).sort()).toEqual(ALL_CODES);
+    expect(rows.map((r) => r.cc_code).sort()).toEqual(LISTED());
+    expect(rows.map((r) => r.cc_code)).not.toContain('IN-ENG-199');
     const c = consolidate(rows);
     expect(c.byBu.map((b) => b.bu).sort()).toEqual(['Engineering', 'Sales', 'Shared Services']);
     expect(c.byBu).toHaveLength(3);
@@ -558,6 +562,6 @@ describe('financial read model (src/lib/financials.ts)', () => {
 
   it('Finance sees every cost centre', async () => {
     const rows = await asUser(KAVYA, (tx) => listMyCostCentres(tx, AS_OF));
-    expect(rows.map((r) => r.cc_code).sort()).toEqual(ALL_CODES);
+    expect(rows.map((r) => r.cc_code).sort()).toEqual(LISTED());
   });
 });

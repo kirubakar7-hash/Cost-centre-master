@@ -142,7 +142,8 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
     if (!period) err('Period', 'INVALID_PERIOD', `Period "${v.Period ?? ''}" is not valid (use YYYY-MM, e.g. 2026-10).`);
     if (!gl) err('GL_Group', 'REQUIRED', 'GL_Group is required.');
     else if (gl.length > 60) err('GL_Group', 'INVALID_GL', 'GL_Group must be 60 characters or fewer.');
-    if (Number.isNaN(budget)) err('Budget', 'INVALID_AMOUNT', `Budget "${v.Budget}" is not a number.`);
+    if (budget === null) err('Budget', 'REQUIRED', 'Budget is required — enter 0 if there is no budget (a blank would wipe it).');
+    else if (Number.isNaN(budget)) err('Budget', 'INVALID_AMOUNT', `Budget "${v.Budget}" is not a number.`);
     else if (budget !== null && Math.abs(budget) >= MAX_AMOUNT) err('Budget', 'INVALID_AMOUNT', `Budget "${v.Budget}" is too large.`);
     if (Number.isNaN(actual)) err('Actual', 'INVALID_AMOUNT', `Actual "${v.Actual}" is not a number.`);
     else if (actual !== null && Math.abs(actual) >= MAX_AMOUNT) err('Actual', 'INVALID_AMOUNT', `Actual "${v.Actual}" is too large.`);

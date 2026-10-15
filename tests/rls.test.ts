@@ -63,8 +63,7 @@ describe('RLS: read access', () => {
     await asSuper(
       db,
       `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by)
-       select id, '2026-09', 1, $1 from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
-      [KAVYA],
+       select id, '2026-09', 1, uploaded_by from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
     );
     for (const t of PROTECTED) {
       expect(await count(asSuper(db, `select * from ${t}`)), `${t} should have seed rows`).toBeGreaterThan(0);

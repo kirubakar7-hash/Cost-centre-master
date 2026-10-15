@@ -1,5 +1,9 @@
 /** Fiscal-year helpers. SolidPro FY runs April–March (FY_START_MONTH=4). */
-export const FY_START_MONTH = Number(process.env.FY_START_MONTH ?? 4);
+const fyStartEnv = Number(process.env.FY_START_MONTH ?? 4);
+if (!Number.isInteger(fyStartEnv) || fyStartEnv < 1 || fyStartEnv > 12) {
+  throw new Error(`FY_START_MONTH must be a whole number 1-12 (got "${process.env.FY_START_MONTH}")`);
+}
+export const FY_START_MONTH = fyStartEnv;
 export const VARIANCE_THRESHOLD = 0.1; // flag lines over ±10% of budget
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;

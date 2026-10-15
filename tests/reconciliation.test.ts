@@ -477,13 +477,13 @@ describe('financials publish: other scenarios', () => {
       await expect(
         as(db, user, `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, '2026-03', 1, $2)`, [res.batchId, user]),
         user,
-      ).rejects.toThrow(/row-level security/);
+      ).rejects.toThrow(/row-level security|Only the preparer/);
       expect(await as(db, user, `update ccp.trial_balances set tb_total = 0 returning period`), user).toHaveLength(0);
     }
     // Finance cannot record a trial balance in someone else's name
     await expect(
       as(db, KAVYA, `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, '2026-02', 1, $2)`, [res.batchId, DEEPA]),
-    ).rejects.toThrow(/row-level security/);
+    ).rejects.toThrow(/row-level security|Only the preparer/);
     await expect(as(db, KAVYA, `delete from ccp.trial_balances`)).rejects.toThrow(/permission denied/);
   });
 
@@ -547,5 +547,38 @@ describe('financials publish: other scenarios', () => {
     await expect(h.publish(res.batchId, KAVYA)).rejects.toThrow(/Segregation of duties/);
     await expect(h.publish(res.batchId, ` ${KAVYA.toUpperCase()} `)).rejects.toThrow(/Segregation of duties/);
     expect((await h.publish(res.batchId, DEEPA)).published).toBe(true);
+  });
+});
+
+describe('segregation of duties is enforced in the database too', () => {
+  it('blocks self-publish and non-preparer trial balances even when the app layer is bypassed', async () => {
+    const { freshDb, asSuper, as, KAVYA, DEEPA } = await import('./helpers');
+    const db = await freshDb();
+    try {
+      await asSuper(
+        db,
+        `insert into ccp.upload_batches (kind, file_name, file_sha256, uploaded_by, status, row_count, error_count, payload)
+         values ('financials', 'x.csv', 'h', $1, 'Validated', 0, 0, '{}'::jsonb)`,
+        [KAVYA],
+      );
+      const [{ id }] = await asSuper<{ id: string }>(db, `select id from ccp.upload_batches where file_name = 'x.csv'`);
+      // Uploader marks own batch Published directly -> trigger refuses
+      await expect(
+        as(db, KAVYA, `update ccp.upload_batches set status = 'Published', published_by = $2 where id = $1`, [id, KAVYA]),
+      ).rejects.toThrow(/Segregation of duties/);
+      // A different Finance user entering the TB directly -> trigger refuses
+      await expect(
+        as(db, DEEPA, `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, '2026-02', 1, $2)`, [id, DEEPA]),
+      ).rejects.toThrow(/Only the preparer/);
+      // Recording an upload under someone else's name -> RLS refuses
+      await expect(
+        as(db, DEEPA, `insert into ccp.upload_batches (kind, file_name, file_sha256, uploaded_by, status, row_count, error_count, payload)
+                       values ('master', 'y.csv', 'h', $1, 'Validated', 0, 0, '{}'::jsonb)`, [KAVYA]),
+      ).rejects.toThrow(/row-level security/);
+      // The checker can publish
+      expect(await as(db, DEEPA, `update ccp.upload_batches set status = 'Published', published_by = $2 where id = $1 returning id`, [id, DEEPA])).toHaveLength(1);
+    } finally {
+      await db.close();
+    }
   });
 });

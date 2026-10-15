@@ -100,9 +100,11 @@ export async function listMyCostCentres(tx: Tx, asOf: string): Promise<CcSummary
     `select c.cc_code, c.cc_alias, c.bu, c.department, c.entity, c.status, o.owner_name, ${TOTALS_SQL(1, 2, 3)}
        from ccp.cost_centres c
        left join ccp.cc_owners o on o.cc_code = c.cc_code
-       left join ccp.financials f on f.cc_code = c.cc_code
+       left join ccp.financials f on f.cc_code = c.cc_code and f.period between $2 and $3
       where c.cc_code = any (ccp.visible_cc_codes())
       group by c.cc_code, c.cc_alias, c.bu, c.department, c.entity, c.status, o.owner_name
+     -- inactive cost centres only when they have figures in this fiscal year
+     having c.status = 'Active' or count(f.cc_code) > 0
       order by c.bu, c.cc_code`,
     [asOf, fy.start, fy.end],
   );
