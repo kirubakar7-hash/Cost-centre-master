@@ -5,7 +5,7 @@ import { parseCsv, parseUpload, MAX_ROWS, type ParsedFile } from '../src/lib/upl
 import { discardUpload, publishUpload, stageUpload } from '../src/lib/upload/service';
 import { buildTemplate, TEMPLATES } from '../src/lib/upload/templates';
 import { normalizeDate, validateMaster, validateOwners, type ExistingState, type Issue } from '../src/lib/upload/validate';
-import { ARUN, KAVYA, MEENA, RAJESH, as, asSuper, freshDb, resetDb, type Driver } from './helpers';
+import { ARUN, DEEPA, KAVYA, MEENA, RAJESH, as, asSuper, freshDb, resetDb, type Driver } from './helpers';
 
 const MASTER_HEADERS = TEMPLATES.master.columns.map((c) => c.key);
 const OWNER_HEADERS = TEMPLATES.owners.columns.map((c) => c.key);
@@ -309,20 +309,30 @@ const ownersCsv = (...rows: Values[]) => csv(OWNER_HEADERS, rows);
 const SEED_101 = cc({ CC_Code: 'IN-ENG-101', CC_Alias: 'Design Chennai', Keywords: 'cad; solidworks; product design; drafting; chennai', Start_Date: '2019-04-01' });
 const SEED_102 = cc({ CC_Code: 'IN-ENG-102', CC_Alias: 'Simulation & CAE Chennai', Department: 'Simulation', Keywords: 'fea; cfd; ansys; analysis; structural', Start_Date: '2020-04-01' });
 
+// Maker-checker (default on): KAVYA stages (maker), DEEPA approves and publishes (checker).
 describe('upload workflow (stage -> publish)', () => {
   let db: Driver;
+  let savedMakerChecker: string | undefined;
   beforeAll(async () => {
     db = await freshDb();
+    savedMakerChecker = process.env.UPLOAD_MAKER_CHECKER;
   });
-  beforeEach(() => resetDb(db)); // every test starts from the seeded state
-  afterAll(() => db.close());
+  beforeEach(async () => {
+    delete process.env.UPLOAD_MAKER_CHECKER; // default: on
+    await resetDb(db); // every test starts from the seeded state
+  });
+  afterAll(async () => {
+    if (savedMakerChecker === undefined) delete process.env.UPLOAD_MAKER_CHECKER;
+    else process.env.UPLOAD_MAKER_CHECKER = savedMakerChecker;
+    await db.close();
+  });
 
   const stage = (kind: 'master' | 'owners', name: string, data: Buffer, user = KAVYA) =>
     withUserOn(db, user, (tx) => stageUpload(tx, user, kind, name, data));
-  const publish = (batchId: string, user = KAVYA) => withUserOn(db, user, (tx) => publishUpload(tx, batchId), { batchId });
+  const publish = (batchId: string, user = DEEPA) => withUserOn(db, user, (tx) => publishUpload(tx, batchId), { batchId });
   const batch = async (id: string) =>
-    (await asSuper<{ status: string; error_count: number; published_by: string | null }>(
-      db, 'select status, error_count, published_by from ccp.upload_batches where id = $1', [id],
+    (await asSuper<{ status: string; error_count: number; uploaded_by: string; published_by: string | null; approved_by: string | null }>(
+      db, 'select status, error_count, uploaded_by, published_by, approved_by from ccp.upload_batches where id = $1', [id],
     ))[0];
   const ccRow = async (code: string) =>
     (await asSuper<Record<string, string | null>>(db, 'select * from ccp.cost_centres where cc_code = $1', [code]))[0];
@@ -336,7 +346,7 @@ describe('upload workflow (stage -> publish)', () => {
     const ev = await asSuper(db, `select user_email from ccp.audit_log where action = 'UPLOAD_REJECTED' and entity_id = $1`, [res.batchId]);
     expect(ev).toEqual([{ user_email: KAVYA }]);
 
-    await expect(publish(res.batchId)).rejects.toThrow(/Rejected and cannot be published/);
+    await expect(publish(res.batchId)).rejects.toThrow(/Upload is Rejected/);
     expect(await ccRow('IN-ENG-104')).toBeUndefined();
   });
 
@@ -359,9 +369,10 @@ describe('upload workflow (stage -> publish)', () => {
 
     const out = await publish(res.batchId);
     expect(out).toEqual({ published: true, summary: { created: 1, updated: 1, unchanged: 1 } });
-    expect(await ccRow('IN-ENG-104')).toMatchObject({ cc_alias: 'Design Coimbatore', status: 'Active', updated_by: KAVYA });
+    // The approver performs the writes, so the rows and audit trail carry the approver's identity.
+    expect(await ccRow('IN-ENG-104')).toMatchObject({ cc_alias: 'Design Coimbatore', status: 'Active', updated_by: DEEPA });
     expect((await ccRow('IN-ENG-102')).keywords).toBe('fea; cfd; ansys; abaqus');
-    expect(await batch(res.batchId)).toMatchObject({ status: 'Published', published_by: KAVYA });
+    expect(await batch(res.batchId)).toMatchObject({ status: 'Published', uploaded_by: KAVYA, approved_by: DEEPA, published_by: DEEPA });
 
     const audit = await as<{ action: string; entity: string; entity_id: string; user_email: string; batch_id: string; old_value: unknown; new_value: unknown }>(
       db, KAVYA, 'select action, entity, entity_id, user_email, batch_id, old_value, new_value from ccp.audit_log where batch_id = $1 order by id',
@@ -372,7 +383,10 @@ describe('upload workflow (stage -> publish)', () => {
       ['UPDATE', 'cost_centres', 'IN-ENG-102'],
       ['UPLOAD_PUBLISHED', 'upload_batch', res.batchId],
     ]);
-    expect(audit.every((a) => a.user_email === KAVYA && a.batch_id === res.batchId)).toBe(true);
+    expect(audit.every((a) => a.user_email === DEEPA && a.batch_id === res.batchId)).toBe(true);
+    // ...while the staging event is attributed to the maker.
+    const staged = await asSuper(db, `select user_email from ccp.audit_log where action = 'UPLOAD_VALIDATED' and entity_id = $1`, [res.batchId]);
+    expect(staged).toEqual([{ user_email: KAVYA }]);
     expect(audit[1]).toMatchObject({
       old_value: { keywords: 'fea; cfd; ansys; analysis; structural' },
       new_value: { keywords: 'fea; cfd; ansys; abaqus' },
@@ -382,7 +396,7 @@ describe('upload workflow (stage -> publish)', () => {
       `select * from ccp.audit_log where entity = 'cost_centres' and entity_id in ('IN-ENG-104', 'IN-ENG-102') and action <> 'CREATE' and batch_id is null`);
     expect(untagged).toEqual([]);
 
-    await expect(publish(res.batchId)).rejects.toThrow(/Published and cannot be published/);
+    await expect(publish(res.batchId)).rejects.toThrow(/Upload is Published/);
   });
 
   it('publish is blocked when the master changed after staging and re-validation fails', async () => {
@@ -397,7 +411,7 @@ describe('upload workflow (stage -> publish)', () => {
     expect(out.published === false && out.errors.map((e) => e.code)).toEqual(['DUPLICATE_ALIAS']);
     expect(await ccRow('IN-ENG-105')).toBeUndefined();
     expect(await batch(res.batchId)).toMatchObject({ status: 'Rejected', error_count: 1 });
-    await expect(publish(res.batchId)).rejects.toThrow(/Rejected/);
+    await expect(publish(res.batchId)).rejects.toThrow(/Upload is Rejected/);
   });
 
   it('owners publish is blocked when the cost centre was deactivated after staging', async () => {
@@ -421,7 +435,9 @@ describe('upload workflow (stage -> publish)', () => {
     expect(res.summary).toEqual({ created: 0, updated: 1, unchanged: 0 });
     expect((await publish(res.batchId)).published).toBe(true);
 
-    expect(await as(db, newOwner, `select * from ccp.financials where cc_code = 'IN-ENG-103'`)).toHaveLength(36);
+    const [{ n }] = await asSuper<{ n: number }>(db, `select count(*)::int as n from ccp.financials where cc_code = 'IN-ENG-103'`);
+    expect(n).toBeGreaterThan(0);
+    expect(await as(db, newOwner, `select * from ccp.financials where cc_code = 'IN-ENG-103'`)).toHaveLength(n);
     const audit = await asSuper<{ action: string; entity: string; old_value: unknown; new_value: unknown }>(
       db, `select action, entity, old_value, new_value from ccp.audit_log where batch_id = $1 and entity = 'cc_owners'`, [res.batchId],
     );
@@ -462,6 +478,55 @@ describe('upload workflow (stage -> publish)', () => {
     expect(await withUserOn(db, KAVYA, (tx) => discardUpload(tx, res.batchId))).toBe(true);
     expect(await withUserOn(db, KAVYA, (tx) => discardUpload(tx, res.batchId))).toBe(false);
     await expect(publish(res.batchId)).rejects.toThrow(/Discarded/);
+    await expect(publish(res.batchId, KAVYA)).rejects.toThrow(/Discarded/);
+  });
+
+  it('maker-checker: the uploader cannot publish their own upload (master and owners)', async () => {
+    const m = await stage('master', 'm.csv', masterCsv(cc()));
+    const o = await stage('owners', 'o.csv', ownersCsv(owner({ CC_Code: 'IN-ENG-103', Owner_Name: 'Priya S', Owner_Email: `priya.s@${D}` })));
+    for (const id of [m.batchId, o.batchId]) {
+      await expect(publish(id, KAVYA)).rejects.toThrow(/Segregation of duties/);
+      expect(await batch(id)).toMatchObject({ status: 'Validated', published_by: null, approved_by: null });
+    }
+    expect(await ccRow('IN-ENG-104')).toBeUndefined();
+    expect((await asSuper<{ owner_name: string }>(db, `select owner_name from ccp.cc_owners where cc_code = 'IN-ENG-103'`))[0].owner_name).toBe('Suresh Babu');
+    // Nothing about the refused attempt is recorded as a publish
+    expect(await asSuper(db, `select * from ccp.audit_log where action = 'UPLOAD_PUBLISHED' and entity_id = any($1)`, [[m.batchId, o.batchId]])).toEqual([]);
+
+    // The same upload staged by DEEPA can be published by KAVYA: the rule is "different user", not "fixed roles".
+    const d = await stage('master', 'm2.csv', masterCsv(cc({ CC_Code: 'IN-ENG-105', CC_Alias: 'Design Hosur' })), DEEPA);
+    await expect(publish(d.batchId, DEEPA)).rejects.toThrow(/Segregation of duties/);
+    expect((await publish(d.batchId, KAVYA)).published).toBe(true);
+    expect(await batch(d.batchId)).toMatchObject({ status: 'Published', uploaded_by: DEEPA, approved_by: KAVYA, published_by: KAVYA });
+  });
+
+  it('maker-checker cannot be sidestepped by passing a differently-cased uploader email', async () => {
+    const res = await withUserOn(db, KAVYA, (tx) => stageUpload(tx, ` ${KAVYA.toUpperCase()} `, 'master', 'm.csv', masterCsv(cc())));
+    expect(res.status).toBe('Validated');
+    expect((await batch(res.batchId)).uploaded_by).toBe(KAVYA);
+    await expect(publish(res.batchId, KAVYA)).rejects.toThrow(/Segregation of duties/);
+    await expect(publish(res.batchId, KAVYA.toUpperCase())).rejects.toThrow(/Segregation of duties/);
+    expect(await ccRow('IN-ENG-104')).toBeUndefined();
+  });
+
+  it('UPLOAD_MAKER_CHECKER=false lets the uploader publish their own upload', async () => {
+    process.env.UPLOAD_MAKER_CHECKER = 'false';
+    try {
+      const res = await stage('master', 'm.csv', masterCsv(cc()));
+      expect((await publish(res.batchId, KAVYA)).published).toBe(true);
+      expect(await batch(res.batchId)).toMatchObject({ status: 'Published', uploaded_by: KAVYA, approved_by: KAVYA, published_by: KAVYA });
+      expect(await ccRow('IN-ENG-104')).toMatchObject({ cc_alias: 'Design Coimbatore' });
+    } finally {
+      delete process.env.UPLOAD_MAKER_CHECKER;
+    }
+    // Back on by default: anything other than the exact string 'false' keeps it on.
+    for (const v of [undefined, 'true', '0', '']) {
+      if (v === undefined) delete process.env.UPLOAD_MAKER_CHECKER;
+      else process.env.UPLOAD_MAKER_CHECKER = v;
+      const res = await stage('master', 'm.csv', masterCsv(cc({ CC_Code: 'IN-ENG-106', CC_Alias: 'Design Madurai' })));
+      await expect(publish(res.batchId, KAVYA), String(v)).rejects.toThrow(/Segregation of duties/);
+    }
+    delete process.env.UPLOAD_MAKER_CHECKER;
   });
 
   it('only Finance can stage or publish', async () => {

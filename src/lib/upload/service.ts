@@ -15,6 +15,7 @@ import { parseUpload, MAX_ROWS, MAX_FINANCIAL_ROWS, type ParsedFile } from './pa
 import { TEMPLATES } from './templates';
 import { validateMaster, validateOwners, type ExistingState, type Issue, type MasterRecord, type OwnerRecord } from './validate';
 import {
+  roundMoney,
   summarizePeriods,
   validateFinancials,
   type FinancialRecord,
@@ -107,9 +108,12 @@ export async function stageUpload(tx: Tx, user: string, kind: BatchKind, fileNam
     summary = errors.length ? { created: 0, updated: 0, unchanged: 0 } : await diffSummary(tx, kind, v.records);
   }
   const status = errors.length ? 'Rejected' : 'Validated';
+  // uploaded_by is the authenticated DB identity (normalised by ccp.app_email()), not the
+  // caller-supplied string: maker-checker compares it with ccp.app_email() at publish time,
+  // so a differently-cased or wrong `user` must not let the uploader approve their own file.
   const [{ id }] = await tx.query<{ id: string }>(
     `insert into ccp.upload_batches (kind, file_name, file_sha256, uploaded_by, status, row_count, error_count, payload, errors, summary)
-     values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb) returning id`,
+     values ($1,$2,$3,coalesce(ccp.app_email(), $4),$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb) returning id`,
     [kind, fileName.slice(0, 200), crypto.createHash('sha256').update(data).digest('hex'), user, status,
      file.rows.length, errors.length, JSON.stringify(file), JSON.stringify(errors), JSON.stringify({ ...summary, warnings })],
   );
@@ -177,7 +181,7 @@ export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<
     await tx.query(
       `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, $2, $3, ccp.app_email())
        on conflict (batch_id, period) do update set tb_total = excluded.tb_total, entered_by = excluded.entered_by, entered_at = now()`,
-      [batchId, period, Math.round(value * 100) / 100],
+      [batchId, period, roundMoney(value)],
     );
   }
   const recon = await reconcile(tx, batchId, periods);

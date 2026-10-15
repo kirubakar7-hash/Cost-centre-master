@@ -26,9 +26,12 @@ export function fyPeriods(period: string): string[] {
   return Array.from({ length: 12 }, (_, i) => addMonths(start, i));
 }
 
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Sep 2026". Fixed names: toLocaleString('en-GB') gives "Sept" or "Sep" depending on the runtime's ICU version. */
 export function periodLabel(period: string): string {
   const [y, m] = period.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+  return `${MONTH_LABELS[m - 1]} ${y}`;
 }
 
 /** Variance = Actual − Budget (positive = overspend). Pct is null when budget is 0. */

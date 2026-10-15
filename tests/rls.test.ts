@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withUserOn } from '../src/lib/db/core';
 import { DEMO_DOMAIN } from '../src/lib/db/seed';
-import { ARUN, KAVYA, MEENA, RAJESH, VIKRAM, as, asSuper, freshDb, type Driver } from './helpers';
+import { ARUN, DEEPA, KAVYA, MEENA, RAJESH, VIKRAM, as, asSuper, freshDb, type Driver } from './helpers';
 
 const PROTECTED = [
   'ccp.financials',
@@ -17,6 +17,8 @@ const PROTECTED = [
   'ccp.audit_log',
   'ccp.upload_batches',
   'ccp.failed_searches',
+  'ccp.trial_balances',
+  'ccp.periods',
 ] as const;
 
 const ENGINEERING_ACTIVE = ['IN-ENG-101', 'IN-ENG-102', 'IN-ENG-103', 'US-ENG-201'];
@@ -57,6 +59,13 @@ describe('RLS: read access', () => {
        values ('master', 'm.csv', 'abc', $1, 'Validated', 0, 0, '{}'::jsonb)`,
       [KAVYA],
     );
+    // The seed has no trial-balance rows (ccp.periods is seeded); add one so the table is non-empty.
+    await asSuper(
+      db,
+      `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by)
+       select id, '2026-09', 1, $1 from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
+      [KAVYA],
+    );
     for (const t of PROTECTED) {
       expect(await count(asSuper(db, `select * from ${t}`)), `${t} should have seed rows`).toBeGreaterThan(0);
     }
@@ -88,7 +97,12 @@ describe('RLS: read access', () => {
   it('Owner sees financials only for their own cost centres; ID tampering returns nothing', async () => {
     const fin = await as<{ cc_code: string }>(db, MEENA, 'select cc_code from ccp.financials');
     expect(codes(fin)).toEqual(['IN-ENG-101', 'IN-ENG-102']);
-    expect(fin.length).toBe(2 * 6 * 6); // 2 CCs x 6 GL groups x 6 periods
+    // Every line of her two cost centres (actual months and budget-only months) — and nothing else.
+    const [{ n }] = await asSuper<{ n: number }>(
+      db, `select count(*)::int as n from ccp.financials where cc_code in ('IN-ENG-101', 'IN-ENG-102')`,
+    );
+    expect(n).toBeGreaterThan(0);
+    expect(fin.length).toBe(n);
 
     expect(await count(as(db, MEENA, `select * from ccp.financials where cc_code = 'IN-SAL-501'`))).toBe(0);
     expect(await count(as(db, MEENA, `select * from ccp.financials where cc_code in ('IN-SAL-501', 'IN-SSV-301', 'IN-ENG-103')`))).toBe(0);
@@ -127,8 +141,8 @@ describe('RLS: read access', () => {
   it('Mgmt sees all financials', async () => {
     const all = await asSuper(db, 'select * from ccp.financials');
     const seen = await as<{ cc_code: string }>(db, RAJESH, 'select * from ccp.financials');
+    expect(all.length).toBeGreaterThan(0);
     expect(seen.length).toBe(all.length);
-    expect(seen.length).toBe(10 * 6 * 6);
     expect(codes(seen)).toEqual([...ENGINEERING_ACTIVE, ...NON_ENGINEERING].sort());
   });
 
@@ -158,6 +172,7 @@ describe('RLS: read access', () => {
     expect(await roles(MEENA)).toEqual(['Owner']);
     expect(await roles(VIKRAM)).toEqual(['BU_Head']);
     expect(await roles(KAVYA)).toEqual(['Finance', 'Owner']); // Finance grant + owns IN-SSV-301
+    expect(await roles(DEEPA)).toEqual(['Backup', 'Finance']); // Finance grant + backup of IN-SSV-301/302
     expect(await roles(RAJESH)).toEqual(['BU_Head', 'Mgmt']); // Mgmt grant + BU head of Shared Services CCs
     // Identity is case-insensitive
     expect(await roles(MEENA.toUpperCase())).toEqual(['Owner']);

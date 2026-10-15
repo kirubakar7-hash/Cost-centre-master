@@ -62,8 +62,20 @@ export function parseAmount(input: string): number | null {
     s = s.slice(1, -1);
   }
   if (!/^-?\d+(\.\d+)?$/.test(s)) return Number.NaN;
-  const n = Math.round(Number(s) * 100) / 100;
+  const n = roundMoney(Number(s));
   return neg ? -n : n;
+}
+
+/**
+ * Round to 2 dp, half away from zero (as Postgres numeric does). Shifting the
+ * decimal point via the exponent avoids float artefacts: 1.005 * 100 is
+ * 100.49999999999999, which Math.round would take down to 1.00.
+ */
+export function roundMoney(n: number): number {
+  const abs = Math.abs(n);
+  const str = String(abs);
+  const r = Math.round(str.includes('e') ? abs * 100 : Number(`${str}e2`)) / 100;
+  return n < 0 && r !== 0 ? -r : r;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -100,6 +112,9 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
   const ccs = new Map(ctx.costCentres.map((c) => [c.cc_code, c]));
   const knownGl = new Set(ctx.knownGlGroups.map((g) => g.toLowerCase()));
   const warnedGl = new Set<string>();
+  // GL groups match case-insensitively; store one spelling per group (the existing one, else
+  // the first in the file) so "employee costs" does not become a separate line in reports.
+  const glSpelling = new Map(ctx.knownGlGroups.map((g) => [g.toLowerCase(), g]));
   const seen = new Map<string, number>();
   const records: (FinancialRecord & { row: number })[] = [];
 
@@ -107,7 +122,9 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
     const err = (column: string | null, code: string, message: string) => errors.push({ row, column, code, message });
     const code = (v.CC_Code ?? '').toUpperCase().replace(/\s+/g, '');
     const period = normalizePeriod(v.Period ?? '');
-    const gl = (v.GL_Group ?? '').replace(/\s+/g, ' ').trim();
+    const glRaw = (v.GL_Group ?? '').replace(/\s+/g, ' ').trim();
+    if (glRaw && !glSpelling.has(glRaw.toLowerCase())) glSpelling.set(glRaw.toLowerCase(), glRaw);
+    const gl = glSpelling.get(glRaw.toLowerCase()) ?? glRaw;
     const budget = parseAmount(v.Budget ?? '');
     const actual = parseAmount(v.Actual ?? '');
     const cc = ccs.get(code);
