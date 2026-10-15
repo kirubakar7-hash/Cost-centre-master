@@ -4,7 +4,7 @@ import { withUser } from '@/lib/db';
 import { requireUser } from '@/lib/session';
 import { UploadPanel } from '@/components/UploadPanel';
 import { PendingApprovals, type Pending } from '@/components/admin/PendingApprovals';
-import { makerCheckerEnabled } from '@/lib/config';
+import { makerCheckerEnabled, reconTolerance } from '@/lib/config';
 import { pendingBatches } from '@/lib/upload/service';
 import { TEMPLATES } from '@/lib/upload/templates';
 
@@ -112,7 +112,10 @@ export default async function AdminPage() {
                   <td className="py-1.5 pr-3 font-medium">{p.period}</td>
                   <td className="pr-3 text-right">{Number(p.actual_total).toLocaleString('en-IN')}</td>
                   <td className="pr-3 text-right">{Number(p.tb_total).toLocaleString('en-IN')}</td>
-                  <td className={`pr-3 font-semibold ${p.actual_total === p.tb_total ? 'text-brand dark:text-brand-light' : 'text-accent'}`}>{p.actual_total === p.tb_total ? '✓ Reconciled' : '✗ Difference'}</td>
+                  {(() => {
+                    const ok = Math.abs(Number(p.actual_total) - Number(p.tb_total)) <= reconTolerance();
+                    return <td className={`pr-3 font-semibold ${ok ? 'text-brand dark:text-brand-light' : 'text-accent'}`}>{ok ? '✓ Reconciled' : '✗ Difference'}</td>;
+                  })()}
                   <td className="pr-3">{p.published_by}</td>
                   <td className="whitespace-nowrap">{p.published_at}</td>
                 </tr>

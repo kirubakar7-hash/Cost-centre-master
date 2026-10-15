@@ -23,6 +23,26 @@ export function PendingApprovals({ items, me, makerChecker }: { items: Pending[]
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [tb, setTb] = useState<Record<string, Record<string, string>>>({});
+
+  // Preparer can (re)enter the trial balance here after leaving the upload screen
+  const reconcile = async (id: string) => {
+    setBusy(id);
+    const res = await fetch(`/api/admin/upload/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reconcile', tb: tb[id] ?? {} }),
+    });
+    const data = await res.json();
+    setBusy(null);
+    setMsg((m) => ({
+      ...m,
+      [id]: res.ok
+        ? { ok: data.reconciled, text: data.reconciled ? 'Reconciled to the trial balance.' : 'Does not reconcile — publishing stays blocked.' }
+        : { ok: false, text: data.error ?? 'Reconciliation failed' },
+    }));
+    router.refresh();
+  };
 
   const act = async (id: string, action: 'publish' | 'discard') => {
     setBusy(id);
@@ -76,7 +96,30 @@ export function PendingApprovals({ items, me, makerChecker }: { items: Pending[]
               </div>
             </div>
             {blockedReason && <p className="mt-2 text-xs text-muted">{blockedReason}</p>}
-            {periods.length > 0 && <div className="mt-3"><ReconTable periods={periods} recon={b.summary.reconciliation} /></div>}
+            {periods.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {own && needsTb && !reconciled ? (
+                  <>
+                    <ReconTable
+                      periods={periods}
+                      recon={b.summary.reconciliation}
+                      tb={tb[b.id]}
+                      onTbChange={(p, v) => setTb((t) => ({ ...t, [b.id]: { ...(t[b.id] ?? {}), [p]: v } }))}
+                    />
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      disabled={busy === b.id || periods.some((p) => p.actualTotal !== null && !tb[b.id]?.[p.period])}
+                      onClick={() => reconcile(b.id)}
+                    >
+                      Reconcile to TB
+                    </button>
+                  </>
+                ) : (
+                  <ReconTable periods={periods} recon={b.summary.reconciliation} />
+                )}
+              </div>
+            )}
             {msg[b.id] && (
               <p role="status" className={`mt-2 rounded-md px-3 py-2 text-sm ${msg[b.id].ok ? 'bg-brand/10 text-brand dark:text-brand-light' : 'bg-accent/10 text-accent'}`}>
                 {msg[b.id].text}

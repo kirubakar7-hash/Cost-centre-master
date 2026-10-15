@@ -36,6 +36,13 @@ export interface PeriodSummary {
   actualTotal: number | null; // null = budget-only period
 }
 
+/**
+ * Largest accepted amount (exclusive), per line and per trial-balance total. Keeps values
+ * exact to the paisa in JS and well inside numeric(18,2) — beyond it Postgres raised a raw
+ * "numeric field overflow" (500) when the trial balance was entered, leaving a stuck batch.
+ */
+export const MAX_AMOUNT = 1e13;
+
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 /** Accepts 2026-10, 2026-10-01 (Excel date), Oct-2026, Oct 2026. */
@@ -78,7 +85,8 @@ export function roundMoney(n: number): number {
   return n < 0 && r !== 0 ? -r : r;
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+/** Whole paise. Totals are summed as integers so the trial-balance comparison is exact at any file size. */
+const toCents = (n: number) => Math.round(n * 100);
 
 export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
   const by = new Map<string, { rows: number; ccs: Set<string>; budget: number; actual: number; hasActual: boolean }>();
@@ -86,9 +94,9 @@ export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
     const p = by.get(r.period) ?? { rows: 0, ccs: new Set<string>(), budget: 0, actual: 0, hasActual: false };
     p.rows++;
     p.ccs.add(r.cc_code);
-    p.budget += r.budget;
+    p.budget += toCents(r.budget);
     if (r.actual !== null) {
-      p.actual += r.actual;
+      p.actual += toCents(r.actual);
       p.hasActual = true;
     }
     by.set(r.period, p);
@@ -99,8 +107,8 @@ export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
       period,
       rows: p.rows,
       costCentres: p.ccs.size,
-      budgetTotal: round2(p.budget),
-      actualTotal: p.hasActual ? round2(p.actual) : null,
+      budgetTotal: p.budget / 100,
+      actualTotal: p.hasActual ? p.actual / 100 : null,
     }));
 }
 
@@ -135,7 +143,9 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
     if (!gl) err('GL_Group', 'REQUIRED', 'GL_Group is required.');
     else if (gl.length > 60) err('GL_Group', 'INVALID_GL', 'GL_Group must be 60 characters or fewer.');
     if (Number.isNaN(budget)) err('Budget', 'INVALID_AMOUNT', `Budget "${v.Budget}" is not a number.`);
+    else if (budget !== null && Math.abs(budget) >= MAX_AMOUNT) err('Budget', 'INVALID_AMOUNT', `Budget "${v.Budget}" is too large.`);
     if (Number.isNaN(actual)) err('Actual', 'INVALID_AMOUNT', `Actual "${v.Actual}" is not a number.`);
+    else if (actual !== null && Math.abs(actual) >= MAX_AMOUNT) err('Actual', 'INVALID_AMOUNT', `Actual "${v.Actual}" is too large.`);
 
     if (cc && period) {
       const closeMonth = cc.close_date?.slice(0, 7);

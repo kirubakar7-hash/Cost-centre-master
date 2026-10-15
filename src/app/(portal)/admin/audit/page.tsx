@@ -57,7 +57,7 @@ export default async function AuditPage() {
                 <tr key={a.id} className="border-theme border-t align-top">
                   <td className="py-1.5 pr-3 whitespace-nowrap">{a.ts}</td>
                   <td className="pr-3">{a.user_email}</td>
-                  <td className={`pr-3 font-semibold ${/DENIED|REJECTED|DEACTIVATE|DELETE/.test(a.action) ? 'text-accent' : ''}`}>{a.action}</td>
+                  <td className={`pr-3 font-semibold ${/DENIED|REJECTED|DEACTIVATE|DELETE|FAILED/.test(a.action) ? 'text-accent' : ''}`}>{a.action}</td>
                   <td className="pr-3 whitespace-nowrap">{a.entity}{a.entity_id ? ` · ${a.entity_id}` : ''}</td>
                   <td className="pr-3 max-w-xs break-all font-mono text-muted">{fmt(a.old_value)}</td>
                   <td className="max-w-xs break-all font-mono">{fmt(a.new_value)}</td>

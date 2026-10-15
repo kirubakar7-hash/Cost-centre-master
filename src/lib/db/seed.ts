@@ -1,7 +1,8 @@
 /**
  * Demo seed data: 10 active cost centres (+1 inactive) across 3 BUs and
- * 2 entities, 5 users covering every role, 6 months of budget/actuals with
- * deliberate >10% variances, and a few allocations.
+ * 2 entities, 6 users covering every role (two Finance users for maker-checker),
+ * 6 months of published budget/actuals with deliberate >10% variances, 6
+ * budget-only months for the full-year outturn, and a few allocations.
  */
 import type { Driver, Tx } from './core';
 

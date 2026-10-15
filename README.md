@@ -2,15 +2,18 @@
 
 Internal web portal for **Solidpro Engineering Support Pvt Ltd**. It is the single source of truth
 for cost centres. Employees use it to find the right cost centre code in seconds. Finance uses it
-to maintain the cost centre master and its owners under audit. In later phases, cost centre owners
-will see their budget against actuals.
+to maintain the cost centre master and its owners under audit, and to publish budget and actuals
+that reconcile to the trial balance. Cost centre owners, BU heads and Management see budget against
+actuals for the cost centres they are responsible for.
 
 Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · Auth.js v5 with Microsoft Entra ID ·
 Postgres with row-level security (Supabase in production, embedded PGlite for local demos) ·
-deployed on Vercel at `https://costcentre.solidpro-engineering.com`.
+Recharts · deployed on Vercel at `https://costcentre.solidpro-engineering.com`.
 
-**Status: Phase 1.** Phase 1 delivers Microsoft sign-in, the Cost Centre Finder, and Admin
-uploads of the cost centre master and owner mapping.
+**Status: Phase 2.** Phase 1 delivered Microsoft sign-in, the Cost Centre Finder, and Admin
+uploads of the cost centre master and owner mapping. Phase 2 adds **My Cost Centres** (budget
+against actuals, variances, Excel export), the **Budget & Actuals upload** with trial-balance
+reconciliation, and **maker-checker** approval of every upload.
 
 ---
 
@@ -31,8 +34,9 @@ uploads of the cost centre master and owner mapping.
 13. [Roadmap](#13-roadmap)
 14. [Known limitations and next steps](#14-known-limitations-and-next-steps)
 
-Finance users should read the [Finance Admin Guide](docs/ADMIN_GUIDE.md), which covers the monthly SOP,
-upload rules and every error code.
+Finance users should read the [Finance Admin Guide](docs/ADMIN_GUIDE.md), which covers the monthly SOP
+(including the Budget & Actuals close), upload rules, trial-balance reconciliation, maker-checker and
+every error code.
 
 ---
 
@@ -52,22 +56,42 @@ The portal fixes this:
   An upload is all-or-nothing, is checked again when it is published, and every change is audited.
   Cost centres are never deleted; they are deactivated instead.
 - **Ownership.** Every active cost centre has an owner and a backup owner. The owner mapping also
-  controls who can see a cost centre's budget and actuals (Phase 2).
+  controls who can see a cost centre's budget and actuals.
+- **Budget against actuals.** *My Cost Centres* shows owners, BU heads and Management the month,
+  year-to-date and full-year figures for their cost centres, broken down by GL group and month, with
+  variances over ±10% flagged and an Excel export.
+- **Reconciled, approved financials.** Finance loads budget and actuals from Tally through the same
+  validated uploads. A month's actuals cannot be published unless the cost centre totals equal the
+  trial balance, and a second Finance user must approve every upload.
+
+**How the figures are calculated** (`src/lib/fiscal.ts`, `src/lib/financials.ts`):
+
+- The fiscal year starts in April (`FY_START_MONTH=4`): FY 2026-27 is April 2026 to March 2027.
+- **Variance = Actual − Budget**, so a **positive variance is an overspend**. Variance % is variance ÷ |budget|.
+- A line is **flagged** when the variance is more than ±10% of budget, or when there is an actual against a zero budget.
+  Cost centres, BUs and GL groups are flagged on their year-to-date figures; the month card and the monthly trend
+  on that month's figures.
+- **YTD** runs from the first month of the fiscal year to the *As of* month. The *As of* selector lists the months
+  that have published actuals, latest first.
+- **Full-year outturn = YTD actual + budget for the remaining months of the fiscal year.**
+- Amounts are shown without a currency symbol, in Indian digit grouping, and are not converted between entities.
 
 ## 2. Roles
 
 Roles are **read from the database on every request**. The session cookie only says who the user is.
 Removing a grant or changing an owner therefore takes effect immediately.
 
-| Role | How a user gets it | Phase 1 (live) | Phase 2 | Phase 3 |
+| Role | How a user gets it | Phase 1 (live) | Phase 2 (live) | Phase 3 |
 |---|---|---|---|---|
-| **Employee** | Any account on an allowed domain that can sign in | Finder: search active cost centres; see code, alias, BU, department, owner name and entity; copy the code; "Contact Finance" when nothing matches. **No financial data.** | — | — |
-| **CC Owner / Backup** | Named as `Owner_Email` or `Backup_Owner_Email` in the owner mapping upload | Finder. "My Cost Centres" is shown as *coming in Phase 2* | **My Cost Centres**: budget against actuals and variances for their own cost centres only | Comment on variances; see allocations into their cost centre |
-| **BU Head** | A `BU_Head` grant for a BU in `ccp.cc_access` (sees the whole BU), or named as `BU_Head_Email` in the owner mapping (sees those cost centres) | Finder | Every cost centre in their BU | Comments and allocations for their BU |
-| **Finance Admin** | A `Finance` grant in `ccp.cc_access` | Finder and **Admin**: template download; upload, validate, publish and discard of the master and owner mapping; data-quality exceptions; recent uploads; audit log; failed-searches report. **The only role that can write master data.** | Budget/Actuals upload with trial-balance reconciliation | Allocations upload; audit reports and exports |
-| **Management / CFO** | An `Mgmt` grant in `ccp.cc_access` | Finder (read access to all cost centres is already enforced in the database) | Company-wide, read-only view of every cost centre | Read-only reports |
+| **Employee** | Any account on an allowed domain that can sign in | Finder: search active cost centres; see code, alias, BU, department, owner name and entity; copy the code; "Contact Finance" when nothing matches. **No financial data.** | No change: no *My Cost Centres* menu and **no financial data** | — |
+| **CC Owner / Backup** | Named as `Owner_Email` or `Backup_Owner_Email` in the owner mapping upload | Finder | **My Cost Centres** for their own cost centres only: month, YTD and full-year budget, actual and variance, outturn, GL-group breakdown and monthly trend, ±10% flags, **Export to Excel** | Comment on variances; see allocations into their cost centre |
+| **BU Head** | A `BU_Head` grant for a BU in `ccp.cc_access` (sees the whole BU), or named as `BU_Head_Email` in the owner mapping (sees those cost centres) | Finder | **My Cost Centres** for every cost centre in their BU (or those naming them), with a by-BU summary | Comments and allocations for their BU |
+| **Finance Admin** | A `Finance` grant in `ccp.cc_access` | Finder and **Admin**: template download; upload, validate, publish and discard of the master and owner mapping; data-quality exceptions; recent uploads; audit log; failed-searches report. **The only role that can write master data.** | **Budget & Actuals upload** with trial-balance reconciliation; **maker-checker** on every upload (the preparer uploads and enters the trial balance, a *different* Finance user approves and publishes); *Awaiting approval* queue; *Published periods* register; My Cost Centres for every cost centre | Allocations upload; audit reports and exports |
+| **Management / CFO** | An `Mgmt` grant in `ccp.cc_access` | Finder (read access to all cost centres is already enforced in the database) | **My Cost Centres**: company-wide, read-only, consolidated totals and a by-BU table | Read-only reports |
 
-Management cannot see the Admin area or the audit log. The audit log is visible to Finance only.
+Management cannot see the Admin area or the audit log. The audit log and trial-balance entries are
+visible to Finance only; the published-periods register (`ccp.periods`) to Finance and Management.
+A user can hold several roles; the menu shows *My Cost Centres* to everyone except plain employees.
 
 ## 3. Architecture
 
@@ -78,7 +102,7 @@ flowchart LR
   subgraph VERCEL["Vercel · Next.js 16"]
     PX["src/proxy.ts<br/>require session · roll 30-min cookie<br/>nonce CSP · security headers"] --> APP["App Router<br/>pages + route handlers"]
     APP --> SES["lib/session.ts<br/>roles = ccp.my_roles() per request"]
-    APP --> SVC["lib/search.ts · lib/upload/*<br/>parse → validate → stage → publish"]
+    APP --> SVC["lib/search.ts · lib/financials.ts · lib/upload/*<br/>parse → validate → stage → reconcile → approve"]
     SES --> DB1["lib/db withUser()<br/>BEGIN · SET LOCAL ROLE cc_app ·<br/>set_config('app.user_email')"]
     SVC --> DB1
   end
@@ -92,10 +116,13 @@ flowchart LR
 | `src/lib/session.ts` | Current user and roles (from the database), `requireFinanceApi()` |
 | `src/lib/db/core.ts` | `pg` / PGlite drivers, migrations, `withUser()` request scope |
 | `src/lib/search.ts` | Finder query: multi-word, partial, any order, active cost centres only |
-| `src/lib/upload/` | Templates (ExcelJS), parser, validation rules, stage/publish/discard service |
-| `src/app/(portal)/` | Finder (`/`), Admin (`/admin`), Audit log and failed searches (`/admin/audit`) |
-| `src/app/api/` | `search`, `admin/templates/[kind]`, `admin/upload`, `admin/upload/[id]`, `auth/[...nextauth]` |
-| `db/migrations/` | `001_schema.sql` (tables), `002_security.sql` (role, RLS, triggers, audit) |
+| `src/lib/financials.ts` | My Cost Centres read model: month, YTD, full-year budget and outturn, GL breakdown, monthly trend, BU consolidation. Every query runs under RLS, so it never filters by user itself. |
+| `src/lib/fiscal.ts` | Fiscal year (`FY_START_MONTH`), variance and ±10% flag rules |
+| `src/lib/upload/` | Templates (ExcelJS), parser, validation rules (`validate.ts`, `validate-financials.ts`), and the stage → trial balance → approve/publish/discard service (`service.ts`) |
+| `src/app/(portal)/` | Finder (`/`), My Cost Centres (`/my`, `/my/[code]`), Admin (`/admin`), Audit log and failed searches (`/admin/audit`) |
+| `src/app/api/` | `search`, `cc/[code]/export`, `admin/templates/[kind]`, `admin/upload`, `admin/upload/[id]` (reconcile, publish, discard), `auth/[...nextauth]` |
+| `src/components/` | `UploadPanel.tsx` (preparer), `admin/` (approval queue, reconciliation table), `cc/` and `charts/` (My Cost Centres) |
+| `db/migrations/` | `001_schema.sql` (tables), `002_security.sql` (role, RLS, triggers, audit), `003_financials.sql` (trial balances, period register, maker-checker evidence) |
 | `scripts/` | `db.ts` (migrate, seed, reset), `build-templates.ts` |
 
 **Data model** (schema `ccp`):
@@ -103,10 +130,15 @@ flowchart LR
 - `cost_centres` is the master. It is never deleted.
 - `cc_owners` holds one owner mapping per cost centre.
 - `cc_access` holds explicit grants: Finance, Mgmt, BU_Head, and per-cost-centre grants.
-- `financials`, `allocations` and `comments` are for Phases 2 and 3. They and their RLS policies already exist.
+- `financials` holds the budget and actual for each cost centre, month (`YYYY-MM`) and GL group. A null
+  `actual` means a budget-only month (no actual yet), not zero.
+- `trial_balances` holds the trial-balance total that the preparer entered for each month of a financials
+  upload, with who entered it and when.
+- `periods` is the register of months with published actuals: CC actuals total, TB total, batch, who published it and when.
+- `allocations` and `comments` are for Phase 3. They and their RLS policies already exist (the demo seed includes allocations, which are not shown yet).
 - `audit_log` is append-only.
 - `failed_searches` holds searches that found nothing.
-- `upload_batches` holds uploads being staged and the upload evidence.
+- `upload_batches` holds uploads being staged and the upload evidence, including `approved_by`.
 
 ## 4. Security model
 
@@ -125,10 +157,11 @@ Security is layered, so no single control has to be perfect:
 | | Recommended: turn on **Assignment required** on the Entra Enterprise App, so that only members of a chosen security group can sign in. | Entra admin centre |
 | **Session** | Encrypted JWT cookie (Auth.js: HttpOnly, SameSite=Lax, Secure on HTTPS) with a **30-minute rolling idle timeout**. `maxAge` is 1800 s and the proxy re-issues the cookie on each request. There is also a **10-hour absolute limit** and a client-side idle timer that signs the user out after 30 minutes without input. | `config.ts`, `proxy.ts`, `IdleTimeout.tsx` |
 | **Edge** | The proxy requires a session on every path except `/login` and `/api/auth/*`. It sets a nonce-based CSP with `strict-dynamic` and `frame-ancestors 'none'`. `next.config.ts` adds HSTS (2 years, preload), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy` and `Permissions-Policy`, and removes `X-Powered-By`. Pages are marked `noindex`. | `proxy.ts`, `next.config.ts` |
-| **Server** | Roles come from `ccp.my_roles()` on every request and are never cached in the cookie. Admin pages redirect non-Finance users. Admin APIs return `403` and log `ACCESS_DENIED`. Uploads are checked for type (`.xlsx`/`.csv`), size (5 MB) and row count (5,000). IDs are checked to be UUIDs. Search and template responses are `Cache-Control: private, no-store`. | `session.ts`, `app/api/**` |
+| **Server** | Roles come from `ccp.my_roles()` on every request and are never cached in the cookie. Admin pages redirect non-Finance users. Admin APIs return `403` and log `ACCESS_DENIED`. A cost centre page (`/my/[code]`) or export that the user may not see returns **the same 404 as a code that does not exist**, so it never confirms that another cost centre exists, and logs `ACCESS_DENIED`. Uploads are checked for type (`.xlsx`/`.csv`), size (5 MB) and row count (5,000; 60,000 for Budget & Actuals). IDs are checked to be UUIDs. Search, template and export responses are `Cache-Control: private, no-store`. | `session.ts`, `app/api/**`, `my/[code]/page.tsx` |
 | **Database** | Each request runs in a transaction as `cc_app`, a role with no `BYPASSRLS`, no `DELETE` on cost centres and no direct write access to the audit log, using `set_config('app.user_email', …)`. **RLS policies decide which rows each user gets** from `cc_access` and `cc_owners`, so a bug or a tampered request in the app cannot widen access. Schema `ccp` is not exposed through Supabase's REST API (the `anon` and `authenticated` roles are revoked). | `002_security.sql`, `db/core.ts` |
-| **Integrity** | Triggers block deletion of cost centres. Deactivating a cost centre removes its owner mapping, and that removal is audited. Every insert, update and delete on `cost_centres`, `cc_owners` and `cc_access` is written to `audit_log` with who, when, old and new values (only the changed fields) and the upload batch id. `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`, even from the privileged migration connection. | `002_security.sql` |
-| **Events** | `LOGIN`, `LOGIN_DENIED`, `LOGOUT` (sign-out or idle), `ACCESS_DENIED`, `TEMPLATE_DOWNLOAD`, `UPLOAD_VALIDATED`, `UPLOAD_REJECTED`, `UPLOAD_PUBLISHED` and `UPLOAD_DISCARDED` are logged through `ccp.log_event()`, which accepts only a fixed list of actions and always records the caller's identity. | `auth.ts`, `logout/route.ts`, `upload/service.ts` |
+| **Integrity** | Triggers block deletion of cost centres. Deactivating a cost centre removes its owner mapping, and that removal is audited. Every insert, update and delete on `cost_centres`, `cc_owners` and `cc_access` is written to `audit_log` with who, when, old and new values (only the changed fields) and the upload batch id. Financial lines are not audited row by row: each financials publish writes one `UPLOAD_PUBLISHED` event with every month's totals before and after, and updates the `periods` register. `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`, even from the privileged migration connection. | `002_security.sql`, `003_financials.sql` |
+| **Maker-checker** | `publishUpload` refuses an upload whose uploader is the signed-in user, and only the uploader can enter the trial balance (`UPLOAD_MAKER_CHECKER`, on by default). `uploaded_by` is taken from the database identity, not from the request. Publishing re-validates the file and, for financials, re-reconciles every month to the trial balance in the same transaction. RLS lets only Finance write `trial_balances`, and only with `entered_by` = the signed-in user. | `upload/service.ts`, `003_financials.sql` |
+| **Events** | `LOGIN`, `LOGIN_DENIED`, `LOGOUT` (sign-out or idle), `ACCESS_DENIED`, `TEMPLATE_DOWNLOAD`, `UPLOAD_VALIDATED`, `UPLOAD_REJECTED`, `UPLOAD_PUBLISHED`, `UPLOAD_DISCARDED`, `TB_ENTERED`, `RECON_PASSED`, `RECON_FAILED` and `EXPORT` are logged through `ccp.log_event()`, which accepts only a fixed list of actions and always records the caller's identity. `VIEW_FINANCIALS` is also on the list but is not written yet. | `auth.ts`, `logout/route.ts`, `upload/service.ts`, `my/[code]/page.tsx`, `api/cc/[code]/export` |
 
 **Excel library.** The portal uses **ExcelJS**, not SheetJS. The npm `xlsx` package (0.18.5) has
 unpatched vulnerabilities: prototype pollution (CVE-2023-30533) and ReDoS (CVE-2024-22363). The
@@ -150,18 +183,40 @@ npm run dev
 
 Open <http://localhost:3000>. When `DATABASE_URL` is not set, the first request creates an embedded
 Postgres (PGlite) database in `./.pglite`, runs the migrations and loads demo data. The demo data has
-10 active cost centres, 1 inactive cost centre (`IN-ENG-199`) and six months of financials
-(2026-04 to 2026-09). The login page then offers **demo users**:
+10 active cost centres, 1 inactive cost centre (`IN-ENG-199`) and FY 2026-27 financials for 6 GL groups:
+**published actuals for April to September 2026** (in the *Published periods* register, reconciled) and
+**budget only for October 2026 to March 2027**. Some lines run deliberately more than 10% over or under
+budget. The login page then offers **demo users**:
 
 | Demo user | Role | What to try |
 |---|---|---|
-| `arun.kumar@solidpro-es.com` | Employee | Search `chen des`, `laptop` or `ineng101`; search something that does not exist |
-| `meena.raj@solidpro-es.com` | CC Owner (`IN-ENG-101`, `IN-ENG-102`) | Same Finder view; *My Cost Centres* is a Phase 2 placeholder |
-| `vikram.iyer@solidpro-es.com` | BU Head, Engineering | Finder |
-| `kavya.s@solidpro-es.com` | Finance Admin | **Admin**: download a template, upload it, read the errors, publish; view the audit log |
-| `rajesh.n@solidpro-es.com` | Management / CFO | Finder; no Admin |
+| `arun.kumar@solidpro-es.com` | Employee | Search `chen des`, `laptop` or `ineng101`; search something that does not exist. No *My Cost Centres* menu |
+| `meena.raj@solidpro-es.com` | CC Owner (`IN-ENG-101`, `IN-ENG-102`) | **My Cost Centres**: her two cost centres. Open `IN-ENG-101`: *Travel & Conveyance* and *Software & Licences* are flagged over budget. Change **As of**, **Export to Excel**. Open `/my/IN-SAL-501`: 404 |
+| `vikram.iyer@solidpro-es.com` | BU Head, Engineering | **My Cost Centres**: every Engineering cost centre (including inactive `IN-ENG-199`), with the by-BU table; `US-ENG-201` is flagged |
+| `kavya.s@solidpro-es.com` | Finance Admin (**preparer**) | **Admin**: download a template, upload it, read the errors, enter the trial balance; view the audit log. She cannot publish her own uploads |
+| `deepa.m@solidpro-es.com` | Finance Approver (**checker**) | **Admin → 3. Awaiting approval**: review and **Approve & publish** Kavya's uploads |
+| `rajesh.n@solidpro-es.com` | Management / CFO | **My Cost Centres**: company-wide consolidated totals and the by-BU table; no Admin |
+
+**Try maker-checker and reconciliation**
+
+1. Sign in as **Kavya**. Download the **Budget & Actuals** template and, on its `Financials` sheet, enter
+   two rows: `IN-ENG-101, 2026-10, Employee Costs, 1800000, 1765000` and
+   `IN-ENG-101, 2026-10, Travel & Conveyance, 120000, 158400` (the same rows are shown as examples on the
+   Instructions sheet).
+2. Under **2. Upload & validate**, choose **Budget & Actuals**, select the file and click **Validate**.
+3. Enter `1923000` as the trial-balance total for 2026-10 and click **Reconcile to TB**: it shows a
+   difference of 400 and *Does not match*. Enter `1923400` and reconcile again: **✓ Reconciled**.
+4. Under **3. Awaiting approval**, *Approve & publish* is disabled for Kavya (segregation of duties).
+5. Sign out, sign in as **Deepa**, and click **Approve & publish**. **Published periods** now lists 2026-10,
+   **Recent uploads** shows Deepa under *Approved by*, and the audit log shows `TB_ENTERED`, `RECON_FAILED`,
+   `RECON_PASSED` and `UPLOAD_PUBLISHED`.
+
+Because an upload replaces every line of each month it contains, this replaces the whole of October 2026
+in the demo database (all other cost centres lose their October budget).
 
 To start again with fresh demo data, stop the dev server, then delete `./.pglite` (or run `npm run db:reset`).
+Do this once if your `./.pglite` was created before Phase 2: the demo data is loaded only into an empty
+database, so an older one gets the new tables but not Deepa, the budget-only months or the period register.
 To build the Excel templates into `./templates/`, run `npm run templates`.
 
 To try **real Microsoft sign-in** locally, set the three `AUTH_MICROSOFT_ENTRA_ID_*` variables
@@ -187,6 +242,10 @@ Every variable is described in [`.env.example`](.env.example).
 | `DATABASE_SSL_STRICT` | No | `true` | Set to `false` to skip verification of the server certificate. The connection is still encrypted. See [§8](#8-supabase-setup). |
 | `PGLITE_DATA_DIR` | No | `./.pglite` | Folder for the embedded database when `DATABASE_URL` is not set. `memory` keeps it in memory only. |
 | `ALLOW_EMBEDDED_DB` | No | — | `true` allows PGlite when `NODE_ENV=production`, e.g. for an `npm run build && npm start` demo. Never use it for a real deployment. |
+| `UPLOAD_MAKER_CHECKER` | No | on | Maker-checker on every upload: the uploader cannot publish their own upload, and only the uploader can enter the trial balance. Only the exact value `false` turns it off, for a single-user demo or test. **Never turn it off in Production.** |
+| `RECON_TOLERANCE` | No | `0` | Largest allowed difference between a month's cost centre actuals and the trial-balance total, in the file's amount units. The default `0` means they must be equal to the paisa. Negative or non-numeric values are treated as `0`. |
+| `FY_START_MONTH` | No | `4` | First month of the fiscal year (1–12). `4` = April, so FY 2026-27 runs April 2026 to March 2027. Drives YTD, full-year budget and outturn. Read at start-up and not validated, so set only a whole number from 1 to 12. |
+| `NEXT_DIST_DIR` | No | `.next` | Alternate Next.js build folder, so that two builds can run side by side on one machine. Do not set it on Vercel. |
 | `CONFIRM_RESET` | Scripts | — | `yes` is required before `npm run db:reset` will drop a **remote** database |
 
 > The `npm run db:*` scripts **do not read `.env.local`**. Export the variables in your shell, or run
@@ -276,6 +335,9 @@ not sign the user out of Microsoft 365.
    | `FINANCE_CONTACT_EMAIL` | Finance shared mailbox |
 
    - Do **not** set `AUTH_DEMO_MODE` in Production. It is ignored there anyway.
+   - Leave `UPLOAD_MAKER_CHECKER`, `RECON_TOLERANCE` and `FY_START_MONTH` unset (maker-checker on, tolerance
+     0.00, April year start) unless Finance has approved a different value.
+   - Run `npm run db:migrate` against the database before deploying Phase 2, so that `003_financials.sql` is applied.
    - For Preview deployments, use a **separate staging database**, or protect them with Vercel
      Deployment Protection.
    - Variables that are sensitive (secret, database URL) should be marked *Sensitive*.
@@ -292,14 +354,16 @@ not sign the user out of Microsoft 365.
    - A personal Microsoft account is refused.
    - Search returns results.
    - A non-Finance user gets `403` from `/api/admin/templates/master`.
+   - A cost centre owner sees only their own cost centres under **My Cost Centres**, and `/my/<another code>`
+     shows the 404 page. **Export to Excel** downloads a workbook.
    - The response headers include `Strict-Transport-Security` and `Content-Security-Policy`.
-   - `LOGIN` appears in the audit log.
+   - `LOGIN`, `ACCESS_DENIED` and `EXPORT` appear in the audit log.
 
 ## 10. Granting roles
 
 - **Owner, backup and BU head** for each cost centre come from the **owner mapping upload**. Finance
   maintains them in the portal. No SQL is needed.
-- **Finance, Management and BU-wide BU Head** are explicit grants in `ccp.cc_access`. Phase 1 has no
+- **Finance, Management and BU-wide BU Head** are explicit grants in `ccp.cc_access`. There is no
   screen for these, so IT runs the SQL as a controlled change, for example in the Supabase SQL editor.
   Setting `app.user_email` records the person running the SQL as the actor in the audit log. Without it,
   the actor is `system`.
@@ -326,6 +390,9 @@ select user_email, role, bu, cc_code, created_at, created_by from ccp.cc_access 
 Emails must be **lower case** (the database enforces this) and must be the address the user signs in
 with. Changes take effect on the user's next page load.
 
+**Grant at least two Finance users.** With maker-checker on (the default), a different Finance user must
+approve every upload, so a single Finance user cannot publish anything.
+
 ## 11. Testing
 
 ```bash
@@ -335,18 +402,23 @@ npm run build     # production build
 ```
 
 Tests live in `tests/*.test.ts`. They use a fresh in-memory database with the real migrations and the demo seed.
-`tests/helpers.ts` provides `freshDb()`, `as(user, sql)` (run as `cc_app` with RLS) and `asSuper()`.
+`tests/helpers.ts` provides `freshDb()`, `resetDb()`, `as(user, sql)` (run as `cc_app` with RLS), `asSuper()`, and
+the demo users, including `KAVYA` (preparer) and `DEEPA` (approver).
 
 | File | Covers |
 |---|---|
-| `tests/rls.test.ts` | Row-level security for every role, including tampered or direct SQL; write restrictions; no-delete; deactivation cascade; audit trail contents; append-only audit log; failed-search logging |
+| `tests/rls.test.ts` | Row-level security for every role, including tampered or direct SQL, now also on `trial_balances` and `periods`; write restrictions; no-delete; deactivation cascade; audit trail contents; append-only audit log; failed-search logging |
 | `tests/search.test.ts` | Term parsing; multi-word, partial and any-order search; code with or without dashes; owner, keyword, BU and department search; inactive cost centres excluded; LIKE and injection safety; **< 1 s with 510 cost centres** |
-| `tests/validate.test.ts` | Date and CSV/XLSX parsing (including the generated template); every master and owner-mapping validation rule and warning; `ALLOWED_EMAIL_DOMAINS`; the end-to-end upload workflow: reject, stage, publish with batch-id audit, re-validation at publish, discard, Finance-only, row limit |
+| `tests/validate.test.ts` | Date and CSV/XLSX parsing (including the generated template); every master and owner-mapping validation rule and warning; `ALLOWED_EMAIL_DOMAINS`; the end-to-end upload workflow: reject, stage, publish with batch-id audit, re-validation at publish, discard, **maker-checker** (including `UPLOAD_MAKER_CHECKER=false`), Finance-only, row limit |
+| `tests/financials.test.ts` | Period and amount parsing (Indian grouping, brackets, currency symbols, rounding); every Budget & Actuals validation rule and warning; period summaries; fiscal-year and variance helpers; the My Cost Centres read model for owner, BU head, Management, Finance and employee (totals, YTD as of an earlier month, ±10% flags, monthly trend, URL tampering, BU consolidation) |
+| `tests/reconciliation.test.ts` | The financials publish workflow end to end (Kavya prepares, Deepa approves): trial-balance entry and reconciliation, publish blocked and logged until it reconciles, maker-checker on financials, period replacement, the period register, budget-only and multi-period files, `RECON_TOLERANCE`, re-validation at publish, RLS on `trial_balances` and `periods` |
 
 ## 12. Acceptance criteria
 
-Phase 1 acceptance criteria, how each one is met, and the evidence for it. *Manual* means the
+Acceptance criteria, how each one is met, and the evidence for it. *Manual* means the
 criterion is checked in the UAT smoke test ([§9](#9-deploy-to-vercel), step 6).
+
+### Phase 1
 
 | # | Acceptance criterion | How it is met | Proven by |
 |---|---|---|---|
@@ -369,29 +441,59 @@ criterion is checked in the UAT smoke test ([§9](#9-deploy-to-vercel), step 6).
 | 17 | The portal works on mobile and follows the SolidPro brand (Blue `#16469D`, Red `#E01A22`, Grey `#939597`, Maven Pro). | Responsive Tailwind layout and brand tokens in `globals.css` | Manual |
 | 18 | Security headers are sent. | CSP (nonce), HSTS, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy` | Manual (`curl -I`) |
 
+### Phase 2
+
+| # | Acceptance criterion | How it is met | Proven by |
+|---|---|---|---|
+| 19 | Owners and backups see budget against actuals only for their own cost centres, BU heads for their BU, and Finance and Management for every cost centre. Employees see none. | `lib/financials.ts` runs every query under RLS (`ccp.visible_cc_codes()`) | `financials.test.ts`: *owner: listMyCostCentres returns exactly her two cost centres with correct totals*, *BU head sees only Engineering cost centres*, *Finance sees every cost centre*, *employee: no cost centres, no periods, nothing by direct code*; `rls.test.ts`: *Owner sees financials only for their own cost centres; ID tampering returns nothing* |
+| 20 | Opening or exporting a cost centre the user may not see looks exactly like a code that does not exist (404), and the attempt is logged. | `getDetail()` returns nothing; the page and export return the same 404 and log `ACCESS_DENIED` | `financials.test.ts`: *URL tampering: an owner gets nothing for a cost centre she does not own*; Manual (404 page and audit entry) |
+| 21 | The cost centre page shows month, YTD and full-year budget, actual and variance, and the full-year outturn (YTD actual + remaining budget), as of a chosen month. | `getTotals()`, `fiscalYear()`, *As of* selector | `financials.test.ts`: *as of an earlier month, YTD stops at that month and later actuals count as outturn budget*, *fiscalYear*, *variance: positive = overspend; pct is null when budget is 0* |
+| 22 | Variances over ±10% are flagged. | `variance()` in `lib/fiscal.ts`; red markers on cost centres, BUs, GL groups and months | `financials.test.ts`: *GL breakdown flags exactly the seeded hotspots for IN-ENG-101*, *IN-ENG-102 flags its under-spend hotspot (Professional Fees)* |
+| 23 | Expense breakdown by GL group (table and bar chart), monthly Budget vs Actual trend, and a consolidated by-BU view for Management, Finance and BU heads. | `getGlBreakdown()`, `getMonthlyTrend()`, `consolidate()`; Recharts | `financials.test.ts`: *monthly trend: 12 FY points, actual null after the as-of month*, *management: consolidate() by BU adds up to the rows and to an independent SQL total*; Manual (charts, mobile) |
+| 24 | A cost centre's figures can be exported to Excel, and the export is logged. | `/api/cc/[code]/export?period=YYYY-MM` (Summary, GL Breakdown and Monthly Trend sheets); `EXPORT` event | Manual |
+| 25 | Finance uploads budget and actuals as `.xlsx` or `.csv`. An invalid file is rejected as a whole with a row-by-row report; budget-only months are supported. | `lib/upload/validate-financials.ts` | `financials.test.ts`: the `validateFinancials` suite (*unknown or missing cost centre*, *invalid period*, *invalid amounts*, *duplicate line …*, *MISSING_ACTUAL …*, *WOULD_REMOVE_ACTUALS …*, *FUTURE_ACTUAL …*, *CC_CLOSED …*, *reports every problem in one pass*), the `normalizePeriod` and `parseAmount` suites; `reconciliation.test.ts`: *staging rejects actuals for a future month (DB clock) and budget-only files for published months* |
+| 26 | **Publishing is blocked if cost centre totals do not reconcile to the trial balance.** | The preparer enters the TB total for each month with actuals; `publishUpload` reconciles again in the same transaction and refuses any month whose difference exceeds `RECON_TOLERANCE` (default 0.00) | `reconciliation.test.ts`: *publishing before any trial balance is entered is blocked and logged (RECON_FAILED)*, *a wrong trial balance fails reconciliation with the exact difference; publishing stays blocked*, *a file with several periods needs a matching trial balance for each period with actuals*, *RECON_TOLERANCE allows a small difference; the default (0) does not* |
+| 27 | Maker-checker: a different Finance user approves and publishes every upload, and only the preparer enters the trial balance. | `publishUpload`, `enterTrialBalance`; *Awaiting approval* queue | `validate.test.ts`: *maker-checker: the uploader cannot publish their own upload (master and owners)*, *maker-checker cannot be sidestepped by passing a differently-cased uploader email*, *UPLOAD_MAKER_CHECKER=false lets the uploader publish their own upload*; `reconciliation.test.ts`: *only the preparer can enter the trial balance, only for periods with actuals in the file*, *the correct trial balance reconciles, but the preparer still cannot publish her own upload*, *the uploader is recorded from the database identity, so letter case cannot defeat maker-checker* |
+| 28 | A corrected month can be re-uploaded and replaces the published month; the *Published periods* register shows CC actuals against the TB, who published and when; the batch keeps the evidence (batch id, SHA-256, TB entered by and at, approved by). | `publishFinancials` replaces every line of each month in the file; `ccp.periods`, `ccp.trial_balances`, `upload_batches.approved_by` | `reconciliation.test.ts`: *DEEPA publishes: September is replaced by the file exactly, other periods are untouched*, *a published batch is final: no re-publish, no new trial balance, no discard*, *a new past period (2026-03, FY 2025-26) gets its own period register entry*, *a budget-only upload for future months needs no trial balance and publishes*; Manual (Admin page) |
+
 ## 13. Roadmap
 
 | Phase | Scope |
 |---|---|
 | **1 — live** | Microsoft Entra ID SSO; Cost Centre Finder; Admin upload of the master and owner mapping with validation, preview, publish and discard; audit log; failed-searches report; RLS for every future data set |
-| **2** | **My Cost Centres** for owners, backups, BU heads and Management: budget against actuals by GL group and month, with >10% variances flagged. **Budget/Actuals upload** using the financials template, with **trial-balance reconciliation**: the upload must tie to the Tally trial balance before it can be published. Maker-checker for publishing. |
-| **3** | Owner comments on variances; shared-service **allocations** view and upload; **audit reports** with filters and Excel export (`EXPORT` is already whitelisted in `log_event`) |
+| **2 — live** | **My Cost Centres** for owners, backups, BU heads and Management: month, YTD and full-year budget against actuals, outturn, GL-group breakdown and monthly trend, ±10% variances flagged, *As of* selector, Excel export. **Budget & Actuals upload** with **trial-balance reconciliation**: a month's actuals must equal the Tally trial balance before they can be published. **Maker-checker** on every upload, with an *Awaiting approval* queue and a *Published periods* register. |
+| **3** | Owner comments on variances; shared-service **allocations** view and upload (the table and demo data already exist); **audit reports** with filters and Excel export |
 
 ## 14. Known limitations and next steps
 
-- **No maker-checker in Phase 1.** The same Finance user can upload and publish. The compensating
-  control is the second-person review in the [Admin Guide SOP](docs/ADMIN_GUIDE.md#1-monthly-sop-checklist).
-  Next step: require `published_by <> uploaded_by` in `publishUpload` and in an RLS check.
+- **Maker-checker is enforced in the application, not the database.** `publishUpload` refuses a publish by
+  the uploader, but no database constraint or RLS policy requires `published_by <> uploaded_by`. It needs at
+  least two Finance users. Next step: add the check to the database as well.
+- **The trial balance can only be entered straight after validation**, in the upload panel. If the preparer
+  leaves the page first, the upload waits in *Awaiting approval* but cannot be reconciled from there; it has to
+  be discarded and uploaded again. Validated uploads never expire. Next step: let the preparer enter the TB
+  from the approval card, and expire old batches.
+- **One trial-balance total per month, across all entities.** Reconciliation and the consolidated views add
+  up the amounts of every entity in the file (e.g. `IN` and `US`) without currency conversion, so files must
+  use one amount unit. There is no per-entity reconciliation.
+- **Financial lines are not audited one by one.** Each publish records per-month totals before and after. The
+  lines it replaced survive only in the earlier upload's stored rows (`upload_batches.payload`), not as audit
+  entries. Keep the uploaded files as evidence.
+- **No export of published financials or of the current master.** Finance keeps its own working copies, because
+  a master row must be a complete record and a Budget & Actuals upload must contain the whole month.
+- **A published month cannot be turned back into a budget-only month** through the portal (`WOULD_REMOVE_ACTUALS`).
 - **No screen for role management.** Finance, Management and BU-head grants are SQL changes
   ([§10](#10-granting-roles)).
-- **No export of the current master.** Finance keeps its own working copy, because an upload row must
-  be a complete record.
-- **Uploads only add or update rows.** Rows that are not in a file are untouched. The only way to remove
-  an owner mapping is to deactivate the cost centre. To swap aliases between two cost centres, use two uploads.
-- **A validated batch cannot be resumed from the UI** after leaving the page, and it stays *Validated*
-  in the history. Next step: let Finance publish or discard from *Recent uploads*, and expire old batches.
-- **The audit screen is basic.** It shows the latest 200 events with no filters, and it does not show the
-  batch id or file SHA-256. Use the SQL in the Admin Guide until Phase 3 audit reports arrive.
+- **Master and owner uploads only add or update rows.** Rows that are not in a file are untouched. The only way
+  to remove an owner mapping is to deactivate the cost centre. To swap aliases between two cost centres, use two uploads.
+- **The audit screen is basic.** It shows the latest 200 events with no filters, and `RECON_FAILED` is not
+  highlighted. The approval card shows only the first 12 characters of the SHA-256 and the first 8 of the batch
+  id (the audit log shows the full batch id for upload events). Use the SQL in the Admin Guide until Phase 3
+  audit reports arrive.
+- **No notifications.** Owners are not told when a month is published, and approvers are not told that an
+  upload is waiting.
+- **Viewing a cost centre's financials is not logged.** `VIEW_FINANCIALS` is whitelisted in `log_event`, but only
+  exports (`EXPORT`) and denied attempts (`ACCESS_DENIED`) are recorded.
 - **Sessions are not revoked centrally.** Disabling an Entra account blocks new sign-ins, but an open
   portal session lasts until the 30-minute idle or 10-hour absolute limit. Signing out of the portal
   does not sign the user out of Microsoft.
@@ -408,4 +510,4 @@ criterion is checked in the UAT smoke test ([§9](#9-deploy-to-vercel), step 6).
   For example: `create role cc_app_login login password '…' noinherit; grant cc_app to cc_app_login;`,
   then use that role in `DATABASE_URL`.
 - **`/api/search` has no rate limit** beyond requiring sign-in. If needed, add a Vercel WAF rate-limit rule.
-- The **financials template** can be downloaded already, but uploading financials arrives in Phase 2.
+- **Comments on variances and the allocations view** arrive in Phase 3.

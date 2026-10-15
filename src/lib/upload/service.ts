@@ -15,6 +15,7 @@ import { parseUpload, MAX_ROWS, MAX_FINANCIAL_ROWS, type ParsedFile } from './pa
 import { TEMPLATES } from './templates';
 import { validateMaster, validateOwners, type ExistingState, type Issue, type MasterRecord, type OwnerRecord } from './validate';
 import {
+  MAX_AMOUNT,
   roundMoney,
   summarizePeriods,
   validateFinancials,
@@ -64,7 +65,14 @@ async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
     'select cc_code, status, start_date::text as start_date, close_date::text as close_date from ccp.cost_centres',
   );
   const gl = await tx.query<{ gl_group: string }>('select distinct gl_group from ccp.financials');
-  const periods = await tx.query<{ period: string }>('select period from ccp.periods');
+  // Periods with actuals: the register, plus any month that already holds actual figures
+  // (e.g. a database seeded before ccp.periods existed — migration 003 does not backfill it),
+  // so a budget-only file can never silently wipe published actuals.
+  const periods = await tx.query<{ period: string }>(
+    `select period from ccp.periods
+     union
+     select distinct period from ccp.financials where actual is not null`,
+  );
   const [{ now }] = await tx.query<{ now: string }>(`select to_char(now(), 'YYYY-MM') as now`);
   return { costCentres, knownGlGroups: gl.map((g) => g.gl_group), publishedPeriods: periods.map((p) => p.period), currentPeriod: now };
 }
@@ -178,6 +186,7 @@ export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<
   for (const [period, value] of Object.entries(totals)) {
     if (!needed.has(period)) throw new UploadError(`Period ${period} has no actuals in this upload.`);
     if (typeof value !== 'number' || !Number.isFinite(value)) throw new UploadError(`Trial balance for ${period} must be a number.`);
+    if (Math.abs(value) >= MAX_AMOUNT) throw new UploadError(`Trial balance for ${period} is too large.`);
     await tx.query(
       `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, $2, $3, ccp.app_email())
        on conflict (batch_id, period) do update set tb_total = excluded.tb_total, entered_by = excluded.entered_by, entered_at = now()`,

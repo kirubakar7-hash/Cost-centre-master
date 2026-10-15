@@ -7,7 +7,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withUserOn } from '../src/lib/db/core';
-import { DEMO_DOMAIN } from '../src/lib/db/seed';
+import { DEMO_DOMAIN, DEMO_USERS } from '../src/lib/db/seed';
 import { ARUN, DEEPA, KAVYA, MEENA, RAJESH, VIKRAM, as, asSuper, freshDb, type Driver } from './helpers';
 
 const PROTECTED = [
@@ -176,6 +176,22 @@ describe('RLS: read access', () => {
     expect(await roles(RAJESH)).toEqual(['BU_Head', 'Mgmt']); // Mgmt grant + BU head of Shared Services CCs
     // Identity is case-insensitive
     expect(await roles(MEENA.toUpperCase())).toEqual(['Owner']);
+  });
+
+  it('every demo login holds the role it is labelled with (incl. two Finance users for maker-checker)', async () => {
+    expect(DEMO_USERS).toHaveLength(6);
+    expect(new Set(DEMO_USERS.map((u) => u.email)).size).toBe(6);
+    const expected: Record<string, string> = {
+      'Employee': '', 'CC Owner': 'Owner', 'BU Head': 'BU_Head', 'Finance Admin': 'Finance', 'Finance Approver': 'Finance', 'Management / CFO': 'Mgmt',
+    };
+    for (const u of DEMO_USERS) {
+      expect(u.email, u.email).toBe(u.email.toLowerCase());
+      expect(u.email.endsWith(`@${DEMO_DOMAIN}`), u.email).toBe(true);
+      const [{ r }] = await as<{ r: string[] }>(db, u.email, 'select ccp.my_roles() as r');
+      if (expected[u.role]) expect(r, u.email).toContain(expected[u.role]);
+      else expect(r, u.email).toEqual([]);
+    }
+    expect(DEMO_USERS.filter((u) => u.role.startsWith('Finance')).map((u) => u.email).sort()).toEqual([DEEPA, KAVYA]);
   });
 });
 

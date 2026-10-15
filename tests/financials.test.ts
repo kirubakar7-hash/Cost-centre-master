@@ -27,6 +27,7 @@ import { TEMPLATES } from '../src/lib/upload/templates';
 import type { Issue } from '../src/lib/upload/validate';
 import {
   normalizePeriod,
+  MAX_AMOUNT,
   parseAmount,
   roundMoney,
   summarizePeriods,
@@ -190,6 +191,14 @@ describe('validateFinancials', () => {
     expect(fin(line({ Actual: 'abc' })).errors[0].message).toMatch(/"abc" is not a number/);
   });
 
+  it('amounts beyond the safe range are rejected (they would overflow numeric(18,2) later)', () => {
+    expect(pick(fin(line({ Actual: '99999999999999999' })).errors)).toEqual([{ row: 2, column: 'Actual', code: 'INVALID_AMOUNT' }]);
+    expect(fin(line({ Actual: '99999999999999999' })).errors[0].message).toMatch(/too large/);
+    expect(pick(fin(line({ Budget: '-10000000000000' })).errors)).toEqual([{ row: 2, column: 'Budget', code: 'INVALID_AMOUNT' }]); // exactly 1e13
+    expect(fin(line({ Budget: '99,99,99,99,99,999.99', Actual: '(9999999999999.99)' })).errors).toEqual([]); // just under the limit
+    expect(MAX_AMOUNT).toBe(1e13);
+  });
+
   it('missing / overlong GL group', () => {
     expect(pick(fin(line({ GL_Group: ' ' })).errors)).toEqual([{ row: 2, column: 'GL_Group', code: 'REQUIRED' }]);
     expect(pick(fin(line({ GL_Group: 'x'.repeat(61) })).errors)).toEqual([{ row: 2, column: 'GL_Group', code: 'INVALID_GL' }]);
@@ -295,6 +304,13 @@ describe('summarizePeriods', () => {
   });
   it('empty input -> no periods', () => {
     expect(summarizePeriods([])).toEqual([]);
+  });
+  it('totals are exact to the paisa even for a maximum-size file (no float drift)', () => {
+    // Summing 1234567.89 sixty thousand times in floating point gives 74074073399.97.
+    const recs = Array.from({ length: 60000 }, (_, i) => rec(`CC-${i % 100}`, '2026-09', `GL ${i}`, 1234567.89, 1234567.89));
+    expect(summarizePeriods(recs)).toEqual([
+      { period: '2026-09', rows: 60000, costCentres: 100, budgetTotal: 74074073400, actualTotal: 74074073400 },
+    ]);
   });
 });
 

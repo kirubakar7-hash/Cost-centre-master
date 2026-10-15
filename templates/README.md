@@ -13,13 +13,14 @@ from the portal is recommended, because the download is recorded in the audit lo
 | `SolidPro_CC_Financials_Template.xlsx` | Budget & Actuals: one row per cost centre, period and GL group | 2 | `Financials` |
 
 Each workbook has a data sheet and an **Instructions** sheet. The data sheet has a
-frozen header row and two example rows, and each header cell has a note that
-explains the rule.
+frozen header row only (no data), and each header cell has a note that explains the
+rule. Example rows are shown on the Instructions sheet, so an unchanged template is
+rejected as empty instead of loading sample data.
 
 ## Rules for all files
 
 - Keep the header row exactly as it is. Column names are case-sensitive, extra columns are ignored and blank rows are skipped.
-- Replace the example rows. Every row you upload is loaded, so example rows that you leave in are loaded too.
+- Enter your rows under the header row. Every row you upload is loaded.
 - Only `.xlsx` or UTF-8 `.csv` files are accepted, up to **5 MB**. Older `.xls` files are rejected. The row limit is **5,000** for the master and owner mapping and **60,000** for Budget & Actuals.
 - For `.xlsx`, the portal reads the sheet named in the table above, or the first sheet if there is no sheet with that name.
 - All cells are formatted as Text so that Excel does not reformat codes or dates.
@@ -64,8 +65,8 @@ explains the rule.
 
 Amounts: commas and spaces are ignored, so Indian (`1,23,456.78`) and Western (`123,456.78`)
 grouping both work. `₹ $ £ €` and a leading `INR`, `USD` or `GBP` are stripped. Negatives
-are `-1234` or `(1,234)`. Values are rounded to 2 decimal places. `Dr`/`Cr` suffixes,
-trailing minus signs and scientific notation are rejected.
+are `-1234` or `(1,234)`. Values are rounded to 2 decimal places and must be below 10^13.
+`Dr`/`Cr` suffixes, trailing minus signs and scientific notation are rejected.
 
 **Rules specific to Budget & Actuals**
 
@@ -77,8 +78,8 @@ trailing minus signs and scientific notation are rejected.
   before it can be published. Budget-only periods need no trial balance.
 - A budget-only row for a month that already has published actuals is rejected, because it would
   remove those actuals.
-- The two example rows are October 2026 actuals for `IN-ENG-101`. Delete them: left in, they
-  would replace the whole of October 2026.
+- Budget is required on every row (enter 0 when there is no budget), because each upload replaces the
+  whole month — a blank budget would otherwise wipe that month's budget.
 
 The full list of error codes and how to fix each one is in
 [`docs/ADMIN_GUIDE.md`](../docs/ADMIN_GUIDE.md#6-read-the-error-report). The monthly close

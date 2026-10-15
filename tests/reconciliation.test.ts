@@ -38,6 +38,12 @@ function restoreEnv() {
   }
 }
 
+/** One sort order for expected and actual rows (independent of the database collation). */
+const byKey = (a: FinRow, b: FinRow) =>
+  a.period < b.period ? -1 : a.period > b.period ? 1
+    : a.cc_code < b.cc_code ? -1 : a.cc_code > b.cc_code ? 1
+      : a.gl_group < b.gl_group ? -1 : a.gl_group > b.gl_group ? 1 : 0;
+
 function harness(getDb: () => Driver) {
   const db = () => getDb();
   return {
@@ -51,8 +57,8 @@ function harness(getDb: () => Driver) {
     /** Financial lines (normalised to numbers), optionally only for / excluding some periods. */
     rows: async (where = 'true', params: unknown[] = []): Promise<FinRow[]> =>
       (await asSuper<{ cc_code: string; period: string; gl_group: string; budget: string; actual: string | null }>(
-        db(), `select cc_code, period, gl_group, budget, actual from ccp.financials where ${where} order by period, cc_code, gl_group`, params,
-      )).map((r) => ({ ...r, budget: Number(r.budget), actual: r.actual === null ? null : Number(r.actual) })),
+        db(), `select cc_code, period, gl_group, budget, actual from ccp.financials where ${where}`, params,
+      )).map((r) => ({ ...r, budget: Number(r.budget), actual: r.actual === null ? null : Number(r.actual) })).sort(byKey),
     batch: async (id: string) =>
       (await asSuper<{ kind: string; status: string; uploaded_by: string; approved_by: string | null; published_by: string | null; published_at: string | null }>(
         db(), 'select kind, status, uploaded_by, approved_by, published_by, published_at from ccp.upload_batches where id = $1', [id],
@@ -71,10 +77,16 @@ function harness(getDb: () => Driver) {
   };
 }
 
+type PublishResult = Awaited<ReturnType<typeof publishUpload>>;
+/** Narrow a publish result that must have been refused (fails the test otherwise). */
+function refused(out: PublishResult) {
+  if (out.published) throw new Error('expected publishing to be refused');
+  return out as Extract<PublishResult, { published: false }> & { error?: string; reconciliation?: unknown };
+}
+
 /** File lines -> the rows publishing should leave in ccp.financials (normalised, sorted like rows()). */
 function expectedRows(lines: Line[], normalise: (l: Line) => FinRow): FinRow[] {
-  return lines.map(normalise).sort((a, b) =>
-    a.period.localeCompare(b.period) || a.cc_code.localeCompare(b.cc_code) || a.gl_group.localeCompare(b.gl_group));
+  return lines.map(normalise).sort(byKey);
 }
 
 /** Seed rows of one published period as a re-upload file, with every actual changed. */
@@ -138,12 +150,10 @@ describe('financials publish: trial-balance reconciliation and maker-checker (Se
   });
 
   it('publishing before any trial balance is entered is blocked and logged (RECON_FAILED)', async () => {
-    const out = await h.publish(batchId);
-    expect(out.published).toBe(false);
-    if (out.published) return;
+    const out = refused(await h.publish(batchId));
     expect(out.errors).toEqual([]);
-    expect('error' in out && out.error).toMatch(/2026-09 has no trial balance entered/);
-    expect('reconciliation' in out && out.reconciliation).toEqual([
+    expect(out.error).toMatch(/2026-09 has no trial balance entered/);
+    expect(out.reconciliation).toEqual([
       { period: SEPT, actualTotal: tbTotal, tbTotal: null, difference: null, matched: false },
     ]);
     await unchanged();
@@ -165,9 +175,9 @@ describe('financials publish: trial-balance reconciliation and maker-checker (Se
     const [tb] = await asSuper<{ tb_total: string; entered_by: string }>(db, 'select tb_total, entered_by from ccp.trial_balances where batch_id = $1', [batchId]);
     expect(tb).toEqual({ tb_total: wrongTb.toFixed(2), entered_by: KAVYA });
 
-    const out = await h.publish(batchId);
-    expect(out.published).toBe(false);
-    expect('error' in out && out.error).toMatch(/2026-09 differs from the trial balance by 1234\.56/);
+    const out = refused(await h.publish(batchId));
+    expect(out.errors).toEqual([]);
+    expect(out.error).toMatch(/2026-09 differs from the trial balance by 1234\.56/);
     await unchanged();
 
     const ev = await h.events(batchId);
@@ -187,6 +197,7 @@ describe('financials publish: trial-balance reconciliation and maker-checker (Se
     await expect(h.enterTb(batchId, { '2026-08': tbTotal })).rejects.toThrow(/2026-08 has no actuals in this upload/);
     await expect(h.enterTb(batchId, { [SEPT]: Number.NaN })).rejects.toThrow(/must be a number/);
     await expect(h.enterTb(batchId, { [SEPT]: Number.POSITIVE_INFINITY })).rejects.toThrow(/must be a number/);
+    await expect(h.enterTb(batchId, { [SEPT]: 1e17 })).rejects.toThrow(/too large/); // not a raw numeric overflow
     for (const user of [MEENA, RAJESH, ARUN]) await expect(h.enterTb(batchId, { [SEPT]: tbTotal }, user), user).rejects.toThrow(/not found/);
     // None of that changed the stored trial balance
     const tbs = await asSuper<{ entered_by: string }>(db, 'select entered_by from ccp.trial_balances where batch_id = $1', [batchId]);
@@ -209,9 +220,8 @@ describe('financials publish: trial-balance reconciliation and maker-checker (Se
 
   it('DEEPA publishes: September is replaced by the file exactly, other periods are untouched', async () => {
     const out = await h.publish(batchId);
-    expect(out.published).toBe(true);
-    if (!out.published) return;
-    expect(out.summary).toMatchObject({
+    expect(out).toMatchObject({ published: true });
+    expect(out.published && out.summary).toMatchObject({
       created: 60,
       periods: [{ period: SEPT, rows: 60, costCentres: 10, actualTotal: tbTotal }],
       reconciliation: [{ period: SEPT, actualTotal: tbTotal, tbTotal, difference: 0, matched: true }],
@@ -333,8 +343,7 @@ describe('financials publish: other scenarios', () => {
     await expect(h.publish(res.batchId, KAVYA)).rejects.toThrow(/Segregation of duties/); // maker-checker applies to budgets too
 
     const out = await h.publish(res.batchId);
-    expect(out.published).toBe(true);
-    expect(out.published && out.summary.reconciliation).toEqual([]);
+    expect(out).toMatchObject({ published: true, summary: { reconciliation: [] } });
     expect(await h.rows('period = any($1)', [[m1, m2]])).toEqual(expectedRows(lines, num));
     expect((await h.rows('period = any($1)', [[m1, m2]])).every((r) => r.actual === null)).toBe(true);
     expect(await h.rows('period <> all($1)', [[m1, m2]])).toEqual(before.filter((r) => r.period !== m1 && r.period !== m2));
@@ -360,6 +369,22 @@ describe('financials publish: other scenarios', () => {
     expect(wipe.summary.periods).toEqual([]);
   });
 
+  it('the budget-only guard also protects actuals that are not in the period register', async () => {
+    // A database seeded before Phase 2 has actuals in ccp.financials but an empty ccp.periods
+    // (migration 003 does not backfill the register, and the demo bootstrap only seeds empty DBs).
+    await asSuper(db, 'delete from ccp.periods');
+    const wipe = await h.stage(fullPeriod('2026-08', null));
+    expect(wipe.status).toBe('Rejected');
+    expect(wipe.errors.map((e) => e.code)).toEqual(['WOULD_REMOVE_ACTUALS']);
+    // ...and a corrected re-upload of that month still works, and registers it
+    const lines = await reuploadOf(h, '2026-08');
+    const res = await h.stage(lines);
+    expect(res.status).toBe('Validated');
+    await h.enterTb(res.batchId, { '2026-08': total(lines.map((l) => l.Actual)) });
+    expect((await h.publish(res.batchId)).published).toBe(true);
+    expect(await h.periodRow('2026-08')).toMatchObject({ batch_id: res.batchId });
+  });
+
   it('a file with several periods needs a matching trial balance for each period with actuals', async () => {
     const cur = await h.currentPeriod();
     const aug = await reuploadOf(h, '2026-08', '10');
@@ -373,10 +398,9 @@ describe('financials publish: other scenarios', () => {
     const r1 = await h.enterTb(res.batchId, { '2026-09': tbSep });
     expect(r1.reconciled).toBe(false);
     expect(r1.reconciliation.map((r) => [r.period, r.matched])).toEqual([['2026-08', false], ['2026-09', true]]);
-    const blocked = await h.publish(res.batchId);
-    expect(blocked.published).toBe(false);
-    expect('error' in blocked && blocked.error).toMatch(/2026-08 has no trial balance entered/);
-    expect('error' in blocked && blocked.error).not.toMatch(/2026-09/);
+    const blocked = refused(await h.publish(res.batchId));
+    expect(blocked.error).toMatch(/2026-08 has no trial balance entered/);
+    expect(blocked.error).not.toMatch(/2026-09/);
 
     expect((await h.enterTb(res.batchId, { '2026-08': tbAug })).reconciled).toBe(true);
     expect((await h.publish(res.batchId)).published).toBe(true);
@@ -426,8 +450,7 @@ describe('financials publish: other scenarios', () => {
 
     // ...but reconciliation is still enforced
     const again = await h.stage(fullPeriod('2026-02', () => '1'));
-    const out = await h.publish(again.batchId, KAVYA);
-    expect(out.published).toBe(false);
+    expect(refused(await h.publish(again.batchId, KAVYA)).error).toMatch(/no trial balance/);
   });
 
   it('non-Finance users cannot stage, reconcile, publish or discard, nor read trial balances', async () => {
@@ -470,15 +493,17 @@ describe('financials publish: other scenarios', () => {
     for (const user of [RAJESH, KAVYA, DEEPA]) expect(await as(db, user, 'select * from ccp.periods'), user).toHaveLength(n);
     for (const user of [MEENA, ARUN, VIKRAM]) expect(await as(db, user, 'select * from ccp.periods'), user).toHaveLength(0);
 
-    for (const user of [RAJESH, MEENA]) {
+    const seedId = await h.seedBatchId();
+    for (const user of [RAJESH, MEENA, VIKRAM, ARUN]) {
       expect(await as(db, user, `update ccp.periods set actual_total = 0 returning period`), user).toHaveLength(0);
       await expect(
-        as(db, user, `insert into ccp.periods (period, actual_total, tb_total, batch_id, published_by)
-                      select '2026-03', 0, 0, batch_id, $1 from ccp.periods limit 1`, [user]),
+        as(db, user, `insert into ccp.periods (period, actual_total, tb_total, batch_id, published_by) values ('2026-03', 0, 0, $1, $2)`, [seedId, user]),
         user,
-      ).rejects.toThrow(/row-level security|null value/);
+      ).rejects.toThrow(/row-level security/);
     }
     expect((await asSuper<{ n: number }>(db, 'select count(*)::int as n from ccp.periods where actual_total = 0'))[0].n).toBe(0);
+    expect((await asSuper<{ n: number }>(db, 'select count(*)::int as n from ccp.periods'))[0].n).toBe(n);
+    await expect(as(db, KAVYA, `delete from ccp.periods`)).rejects.toThrow(/permission denied/);
   });
 
   it('a discarded batch cannot be reconciled or published', async () => {
@@ -505,8 +530,7 @@ describe('financials publish: other scenarios', () => {
     // Meanwhile IN-ENG-103 is closed at the end of August
     await as(db, KAVYA, `update ccp.cost_centres set status = 'Inactive', close_date = '2026-08-31' where cc_code = 'IN-ENG-103'`);
 
-    const out = await h.publish(res.batchId);
-    expect(out.published).toBe(false);
+    const out = refused(await h.publish(res.batchId));
     expect(new Set(out.errors.map((e) => e.code))).toEqual(new Set(['CC_CLOSED']));
     expect(out.errors).toHaveLength(GL_GROUPS.length);
     expect(await h.rows()).toEqual(before);
