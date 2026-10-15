@@ -42,15 +42,15 @@ export const TEMPLATES: Record<UploadKind, TemplateDef> = {
   },
   financials: {
     kind: 'financials',
-    title: 'Budget & Actuals (Phase 2)',
+    title: 'Budget & Actuals',
     sheet: 'Financials',
     fileName: 'SolidPro_CC_Financials_Template.xlsx',
     columns: [
-      { key: 'CC_Code', required: true, help: 'Must exist in the master', example: ['IN-ENG-101', 'IN-ENG-101'] },
-      { key: 'Period', required: true, help: 'YYYY-MM', example: ['2026-10', '2026-10'] },
+      { key: 'CC_Code', required: true, help: 'Must exist in the master. Every upload REPLACES all lines for every period it contains — include every cost centre for that period.', example: ['IN-ENG-101', 'IN-ENG-101'] },
+      { key: 'Period', required: true, help: 'YYYY-MM (or Oct-2026). One file may hold several periods, e.g. a month of actuals or a full-year budget.', example: ['2026-10', '2026-10'] },
       { key: 'GL_Group', required: true, help: 'GL group as mapped from the Tally export', example: ['Employee Costs', 'Travel & Conveyance'] },
       { key: 'Budget', required: true, help: 'Number, no currency symbols', example: ['1800000', '120000'] },
-      { key: 'Actual', required: true, help: 'Number, no currency symbols', example: ['1765000', '158400'] },
+      { key: 'Actual', required: true, help: 'Number. Leave blank ONLY for budget-only (future) months; in a month with actuals enter 0, not blank. CC actuals per period must equal the trial balance.', example: ['1765000', '158400'] },
     ],
   },
 };

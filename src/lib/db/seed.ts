@@ -11,7 +11,8 @@ export const DEMO_USERS = [
   { email: `arun.kumar@${DEMO_DOMAIN}`, name: 'Arun Kumar', role: 'Employee', note: 'Finder only' },
   { email: `meena.raj@${DEMO_DOMAIN}`, name: 'Meena Raj', role: 'CC Owner', note: 'Owns IN-ENG-101, IN-ENG-102' },
   { email: `vikram.iyer@${DEMO_DOMAIN}`, name: 'Vikram Iyer', role: 'BU Head', note: 'Engineering BU' },
-  { email: `kavya.s@${DEMO_DOMAIN}`, name: 'Kavya S', role: 'Finance Admin', note: 'Full access + admin' },
+  { email: `kavya.s@${DEMO_DOMAIN}`, name: 'Kavya S', role: 'Finance Admin', note: 'Full access + admin (maker)' },
+  { email: `deepa.m@${DEMO_DOMAIN}`, name: 'Deepa M', role: 'Finance Approver', note: 'Finance admin (checker)' },
   { email: `rajesh.n@${DEMO_DOMAIN}`, name: 'Rajesh N', role: 'Management / CFO', note: 'Read-only, all CCs' },
 ] as const;
 
@@ -68,7 +69,10 @@ export const GL_GROUPS = [
   'Office & Admin',
 ] as const;
 
+/** Periods with published actuals (FY 2026-27, April start). */
 export const SEED_PERIODS = ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'];
+/** Remaining FY months: budget only (actual blank), used for full-year outturn. */
+export const SEED_BUDGET_ONLY_PERIODS = ['2026-10', '2026-11', '2026-12', '2027-01', '2027-02', '2027-03'];
 
 /** Deterministic pseudo-random in [0,1) so the demo data is stable. */
 function rand(seed: string) {
@@ -95,7 +99,7 @@ const HOTSPOTS: Record<string, Record<string, number>> = {
 };
 
 export function buildFinancials() {
-  const rows: { cc: string; period: string; gl: string; budget: number; actual: number }[] = [];
+  const rows: { cc: string; period: string; gl: string; budget: number; actual: number | null }[] = [];
   for (const cc of SEED_COST_CENTRES.filter((c) => c.status !== 'Inactive')) {
     const scale = cc.entity === 'US' ? 0.6 : 1;
     GL_GROUPS.forEach((gl, i) => {
@@ -104,6 +108,10 @@ export function buildFinancials() {
         const noise = 0.95 + rand(cc.code + gl + period) * 0.08; // within ±5%
         const factor = HOTSPOTS[cc.code]?.[gl] ?? 1;
         rows.push({ cc: cc.code, period, gl, budget, actual: Math.round(budget * noise * factor) });
+      }
+      for (const period of SEED_BUDGET_ONLY_PERIODS) {
+        const budget = Math.round(BASE[cc.type][i] * scale * (0.95 + rand(cc.code + gl) * 0.1));
+        rows.push({ cc: cc.code, period, gl, budget, actual: null });
       }
     });
   }
@@ -141,11 +149,29 @@ export async function seedData(tx: Tx) {
     );
   }
 
-  for (const f of buildFinancials()) {
+  // Bulk insert (one statement) — far faster than row-by-row
+  await tx.query(
+    `insert into ccp.financials (cc_code, period, gl_group, budget, actual)
+     select cc, period, gl, budget, actual
+       from jsonb_to_recordset($1::jsonb) as r(cc text, period text, gl text, budget numeric, actual numeric)
+     on conflict do nothing`,
+    [JSON.stringify(buildFinancials())],
+  );
+
+  // Period register: seeded actuals are treated as published and reconciled
+  const [{ n: periodsSeeded }] = await tx.query<{ n: number }>('select count(*)::int as n from ccp.periods');
+  if (periodsSeeded === 0) {
+    const [{ id }] = await tx.query<{ id: string }>(
+      `insert into ccp.upload_batches (kind, file_name, file_sha256, uploaded_by, status, row_count, error_count, payload,
+                                       published_at, published_by, approved_by)
+       values ('financials', 'seed-data', 'seed', 'seed@system', 'Published', 0, 0, '{}'::jsonb, now(), 'seed@system', 'seed@system')
+       returning id`,
+    );
     await tx.query(
-      `insert into ccp.financials (cc_code, period, gl_group, budget, actual) values ($1,$2,$3,$4,$5)
-       on conflict do nothing`,
-      [f.cc, f.period, f.gl, f.budget, f.actual],
+      `insert into ccp.periods (period, actual_total, tb_total, batch_id, published_by)
+       select period, sum(actual), sum(actual), $1, 'seed@system'
+         from ccp.financials where actual is not null group by period`,
+      [id],
     );
   }
 

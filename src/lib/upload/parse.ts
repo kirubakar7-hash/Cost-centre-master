@@ -12,6 +12,7 @@ export class UploadParseError extends Error {}
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const MAX_ROWS = 5000;
+export const MAX_FINANCIAL_ROWS = 60000;
 
 /** RFC 4180 CSV parser (quoted fields, escaped quotes, CRLF). */
 export function parseCsv(text: string): string[][] {

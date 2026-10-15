@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const kind = form.get('kind');
     const file = form.get('file');
-    if (kind !== 'master' && kind !== 'owners') return Response.json({ error: 'Invalid upload type' }, { status: 400 });
+    if (kind !== 'master' && kind !== 'owners' && kind !== 'financials') return Response.json({ error: 'Invalid upload type' }, { status: 400 });
     if (!(file instanceof File)) return Response.json({ error: 'No file received' }, { status: 400 });
     if (file.size > MAX_UPLOAD_BYTES) return Response.json({ error: 'File larger than 5 MB' }, { status: 413 });
     if (!/\.(xlsx|csv)$/i.test(file.name)) return Response.json({ error: 'Only .xlsx or .csv files are accepted' }, { status: 400 });

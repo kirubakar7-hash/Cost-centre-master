@@ -37,3 +37,14 @@ export function entraConfigured(): boolean {
       process.env.AUTH_MICROSOFT_ENTRA_ID_TENANT_ID,
   );
 }
+
+/** Maker-checker: the uploader cannot publish their own upload (default on). */
+export function makerCheckerEnabled(): boolean {
+  return process.env.UPLOAD_MAKER_CHECKER !== 'false';
+}
+
+/** Allowed difference between CC actuals and the trial balance (default 0.00 = must equal). */
+export function reconTolerance(): number {
+  const v = Number(process.env.RECON_TOLERANCE ?? 0);
+  return Number.isFinite(v) && v >= 0 ? v : 0;
+}

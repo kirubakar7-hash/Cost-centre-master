@@ -9,6 +9,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Optional alternate build dir (lets two builds run side by side locally)
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   poweredByHeader: false,
   serverExternalPackages: ['@electric-sql/pglite', 'pg', 'exceljs'],
   outputFileTracingIncludes: { '/**': ['./db/migrations/**', './templates/**'] },
