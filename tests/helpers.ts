@@ -5,7 +5,8 @@ import { seed, DEMO_DOMAIN } from '../src/lib/db/seed';
 export const ARUN = `arun.kumar@${DEMO_DOMAIN}`; // Employee, no grants
 export const MEENA = `meena.raj@${DEMO_DOMAIN}`; // Owner of IN-ENG-101, IN-ENG-102
 export const VIKRAM = `vikram.iyer@${DEMO_DOMAIN}`; // BU head, Engineering
-export const KAVYA = `kavya.s@${DEMO_DOMAIN}`; // Finance
+export const KAVYA = `kavya.s@${DEMO_DOMAIN}`; // Finance (maker: stages uploads, enters the trial balance)
+export const DEEPA = `deepa.m@${DEMO_DOMAIN}`; // Finance (checker: approves and publishes uploads)
 export const RAJESH = `rajesh.n@${DEMO_DOMAIN}`; // Mgmt / CFO
 
 export async function freshDb(): Promise<Driver> {
