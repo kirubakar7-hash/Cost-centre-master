@@ -318,6 +318,8 @@ must first be reconciled by the preparer ([§7](#7-reconcile-to-the-trial-balanc
 | `DUPLICATE_LINE` | The same cost centre, month and GL group appear on more than one row (the GL group is compared ignoring case and extra spaces). The message gives the other row. | Add the amounts together on one row. |
 | `MISSING_ACTUAL` | The month has actuals on other rows, but `Actual` is blank on this row. At most 20 rows are listed for each month. | Enter `0`. |
 | `WOULD_REMOVE_ACTUALS` (row `File`) | A month in the file has no actuals at all, but that month already has actuals in the portal (it is in **Published periods**, or holds actual figures). Publishing would remove them. | Leave the month out of the file, or include its actuals and enter its trial-balance total. |
+| `INCOMPLETE_PERIOD` (row `File`) | The file covers a month that already has figures for cost centres that are not in the file. An upload replaces the whole month, so publishing would delete their budgets and actuals. | Include every cost centre for that month (use 0 where there is nothing to report). To correct one cost centre, re-upload the full month. |
+| `PERIOD_TOTAL_TOO_LARGE` (row `File`) | A month's budget or actual total is 10 lakh crore (10^13) or more, so it could never be reconciled to a trial balance. | Check for a pasted account number or a missing decimal point. |
 
 ### Warnings (shown after validation; they do not block publishing)
 

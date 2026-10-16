@@ -301,6 +301,24 @@ describe('financials publish: other scenarios', () => {
     cc_code: l.CC_Code, period: l.Period, gl_group: l.GL_Group, budget: cents(l.Budget) / 100, actual: l.Actual === '' ? null : cents(l.Actual) / 100,
   });
 
+  it('a budget correction for one cost centre is refused instead of wiping the others for that month', async () => {
+    const before = await h.rows();
+    // 2027-01 is budget-only in the seed, for all 10 active cost centres
+    const lines = GL_GROUPS.map((gl) => ({ CC_Code: 'IN-ENG-101', Period: '2027-01', GL_Group: gl, Budget: '500000', Actual: '' }));
+    const res = await h.stage(lines);
+    expect(res.status).toBe('Rejected');
+    expect(res.errors.map((e) => e.code)).toEqual(['INCOMPLETE_PERIOD']);
+    expect(res.errors[0].message).toMatch(/9 cost centre/);
+    expect(await h.rows()).toEqual(before);
+
+    // The full month (every active cost centre) is accepted and publishes without a TB
+    const full = fullPeriod('2027-01', null);
+    const ok = await h.stage(full);
+    expect(ok.status).toBe('Validated');
+    expect((await h.publish(ok.batchId)).published).toBe(true);
+    expect(await h.rows(`period = '2027-01'`)).toEqual(expectedRows(full, num));
+  });
+
   it('a new past period (2026-03, FY 2025-26) gets its own period register entry', async () => {
     const lines = fullPeriod('2026-03', (i) => `${9000 + i}.${String(i % 100).padStart(2, '0')}`);
     const tb = total(lines.map((l) => l.Actual));

@@ -74,7 +74,16 @@ async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
      select distinct period from ccp.financials where actual is not null`,
   );
   const [{ now }] = await tx.query<{ now: string }>(`select to_char(now(), 'YYYY-MM') as now`);
-  return { costCentres, knownGlGroups: gl.map((g) => g.gl_group), publishedPeriods: periods.map((p) => p.period), currentPeriod: now };
+  const covered = await tx.query<{ period: string; ccs: string[] }>(
+    'select period, array_agg(distinct cc_code) as ccs from ccp.financials group by period',
+  );
+  return {
+    costCentres,
+    knownGlGroups: gl.map((g) => g.gl_group),
+    publishedPeriods: periods.map((p) => p.period),
+    currentPeriod: now,
+    existingCcsByPeriod: Object.fromEntries(covered.map((c) => [c.period, c.ccs])),
+  };
 }
 
 export interface ReconLine {

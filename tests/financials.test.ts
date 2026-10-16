@@ -199,6 +199,24 @@ describe('validateFinancials', () => {
     expect(MAX_AMOUNT).toBe(1e13);
   });
 
+  it('PERIOD_TOTAL_TOO_LARGE: valid lines whose month total could never be reconciled', () => {
+    // Each line is under the limit, but the month adds up to 12 lakh crore: no TB could be entered
+    const r = fin(line({ Actual: '6000000000000' }), line({ GL_Group: 'Travel & Conveyance', Actual: '6000000000000' }));
+    expect(pick(r.errors)).toEqual([{ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE' }]);
+    // A line rejected on its own is reported once, not again as a period total
+    expect(codesOf(line({ Actual: '99999999999999999' }))).toEqual(['INVALID_AMOUNT']);
+  });
+
+  it('INCOMPLETE_PERIOD: a file must cover every cost centre that already has figures in that month', () => {
+    const ctx = { ...CTX, existingCcsByPeriod: { '2026-10': ['IN-ENG-101', 'IN-ENG-102'] } };
+    const partial = validateFinancials(file(FIN_HEADERS, [line()]), ctx);
+    expect(pick(partial.errors)).toEqual([{ row: null, column: 'CC_Code', code: 'INCOMPLETE_PERIOD' }]);
+    expect(partial.errors[0].message).toMatch(/IN-ENG-102/);
+    // Covering both cost centres is fine, and other months are not affected
+    expect(validateFinancials(file(FIN_HEADERS, [line(), line({ CC_Code: 'IN-ENG-102' })]), ctx).errors).toEqual([]);
+    expect(validateFinancials(file(FIN_HEADERS, [line({ Period: '2026-11', Actual: '' })]), ctx).errors).toEqual([]);
+  });
+
   it('missing / overlong GL group', () => {
     expect(pick(fin(line({ GL_Group: ' ' })).errors)).toEqual([{ row: 2, column: 'GL_Group', code: 'REQUIRED' }]);
     expect(pick(fin(line({ GL_Group: 'x'.repeat(61) })).errors)).toEqual([{ row: 2, column: 'GL_Group', code: 'INVALID_GL' }]);
@@ -284,6 +302,16 @@ describe('validateFinancials', () => {
 });
 
 describe('summarizePeriods', () => {
+  it('period totals stay exact even when running sums pass 2^53 paise', () => {
+    const big = { cc_code: 'IN-ENG-101', period: '2026-09', gl_group: 'Employee Costs', budget: 0 };
+    const recs = [
+      ...Array.from({ length: 1000 }, () => ({ ...big, actual: 9999999999999.99 })),
+      ...Array.from({ length: 1000 }, () => ({ ...big, actual: -9999999999999.99 })),
+      { ...big, actual: 0.01 },
+    ];
+    expect(summarizePeriods(recs)[0].actualTotal).toBe(0.01);
+  });
+
   const rec = (cc_code: string, period: string, gl_group: string, budget: number, actual: number | null): FinancialRecord => ({
     cc_code, period, gl_group, budget, actual,
   });

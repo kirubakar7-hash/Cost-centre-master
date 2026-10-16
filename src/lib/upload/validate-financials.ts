@@ -26,6 +26,11 @@ export interface FinancialsContext {
   publishedPeriods: string[];
   /** Current calendar month (YYYY-MM); actuals cannot be posted after it */
   currentPeriod: string;
+  /**
+   * Cost centres that already have lines in each period. Because an upload replaces
+   * whole periods, a file must cover all of them or it would silently delete their figures.
+   */
+  existingCcsByPeriod?: Record<string, string[]>;
 }
 
 export interface PeriodSummary {
@@ -85,13 +90,18 @@ export function roundMoney(n: number): number {
   return n < 0 && r !== 0 ? -r : r;
 }
 
-/** Whole paise. Totals are summed as integers so the trial-balance comparison is exact at any file size. */
-const toCents = (n: number) => Math.round(n * 100);
+/**
+ * Whole paise as BigInt. Lines are below MAX_AMOUNT (1e15 paise, exact in a double), and
+ * summing them as BigInt keeps period totals exact however many rows a file has; the
+ * period total itself is then held below MAX_AMOUNT by validateFinancials.
+ */
+const toCents = (n: number) => BigInt(Math.round(n * 100));
+const MAX_CENTS = BigInt(MAX_AMOUNT) * 100n;
 
-export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
-  const by = new Map<string, { rows: number; ccs: Set<string>; budget: number; actual: number; hasActual: boolean }>();
+function periodTotals(records: FinancialRecord[]) {
+  const by = new Map<string, { rows: number; ccs: Set<string>; budget: bigint; actual: bigint; hasActual: boolean }>();
   for (const r of records) {
-    const p = by.get(r.period) ?? { rows: 0, ccs: new Set<string>(), budget: 0, actual: 0, hasActual: false };
+    const p = by.get(r.period) ?? { rows: 0, ccs: new Set<string>(), budget: 0n, actual: 0n, hasActual: false };
     p.rows++;
     p.ccs.add(r.cc_code);
     p.budget += toCents(r.budget);
@@ -101,14 +111,21 @@ export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
     }
     by.set(r.period, p);
   }
+  return by;
+}
+
+const absBig = (n: bigint) => (n < 0n ? -n : n);
+
+export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
+  const by = periodTotals(records);
   return [...by.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([period, p]) => ({
       period,
       rows: p.rows,
       costCentres: p.ccs.size,
-      budgetTotal: p.budget / 100,
-      actualTotal: p.hasActual ? p.actual / 100 : null,
+      budgetTotal: Number(p.budget) / 100,
+      actualTotal: p.hasActual ? Number(p.actual) / 100 : null,
     }));
 }
 
@@ -173,8 +190,9 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
       cc_code: code,
       period: period ?? '',
       gl_group: gl,
-      budget: budget === null || Number.isNaN(budget) ? 0 : budget,
-      actual: actual === null || Number.isNaN(actual) ? null : actual,
+      // An amount already rejected on its own row is left out of the period totals
+      budget: budget === null || Number.isNaN(budget) || Math.abs(budget) >= MAX_AMOUNT ? 0 : budget,
+      actual: actual === null || Number.isNaN(actual) ? null : Math.abs(actual) >= MAX_AMOUNT ? 0 : actual,
     });
   }
 
@@ -195,6 +213,29 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
     }
     if (p.withActual === 0 && published.has(period))
       errors.push({ row: null, column: 'Actual', code: 'WOULD_REMOVE_ACTUALS', message: `Period ${period} already has published actuals; this budget-only file would remove them. Include the actuals for ${period}.` });
+  }
+
+  // Period totals must fit the same limit as a trial-balance total, or the batch could
+  // never be reconciled and published.
+  const totals = periodTotals(records.filter((r) => r.period));
+  for (const [period, t] of totals) {
+    if (absBig(t.budget) >= MAX_CENTS || absBig(t.actual) >= MAX_CENTS)
+      errors.push({ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE', message: `The total for ${period} is too large to reconcile. Check for a pasted account number or a missing decimal point.` });
+  }
+
+  // Each upload replaces whole periods: refuse a file that would silently delete other
+  // cost centres' figures for a period it touches.
+  for (const [period, t] of totals) {
+    const missing = (ctx.existingCcsByPeriod?.[period] ?? []).filter((cc) => !t.ccs.has(cc)).sort();
+    if (missing.length) {
+      const list = missing.slice(0, 10).join(', ') + (missing.length > 10 ? ` and ${missing.length - 10} more` : '');
+      errors.push({
+        row: null,
+        column: 'CC_Code',
+        code: 'INCOMPLETE_PERIOD',
+        message: `${period} already has figures for ${missing.length} cost centre(s) not in this file (${list}). An upload replaces the whole month, so include every cost centre for ${period} (use 0 where there is nothing to report).`,
+      });
+    }
   }
 
   return { records: records.map(({ row: _row, ...r }) => r), errors, warnings };
