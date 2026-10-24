@@ -5,13 +5,17 @@
  *  - Any validation error rejects the whole file (nothing saved).
  *  - Publish re-validates against the CURRENT database in the same transaction.
  *  - Maker-checker: the publisher must be a different Finance user from the uploader.
- *  - Financials: every period with actuals must reconcile to the trial-balance
- *    total entered by the preparer, or publishing is blocked.
+ *  - Financials: every period with actuals must reconcile, entity by entity, to the
+ *    trial-balance total entered by the preparer, or publishing is blocked.
+ *  - Financials: every line a publish adds, changes or removes is kept in
+ *    ccp.financials_history (old and new values, batch id).
  */
 import crypto from 'node:crypto';
 import type { Tx } from '../db/core';
 import { makerCheckerEnabled, reconTolerance } from '../config';
 import { parseUpload, MAX_ROWS, MAX_FINANCIAL_ROWS, type ParsedFile } from './parse';
+import { summarizeAllocations, validateAllocations, type AllocationRecord, type AllocationRunSummary, type AllocationsContext } from './validate-allocations';
+import { currencyOf } from '../currency';
 import { TEMPLATES } from './templates';
 import { validateMaster, validateOwners, type ExistingState, type Issue, type MasterRecord, type OwnerRecord } from './validate';
 import {
@@ -25,7 +29,7 @@ import {
 } from './validate-financials';
 
 export type MasterKind = 'master' | 'owners';
-export type BatchKind = MasterKind | 'financials';
+export type BatchKind = MasterKind | 'financials' | 'allocations';
 
 /** Expected, user-correctable problems (shown as 400). Anything else is a 500. */
 export class UploadError extends Error {}
@@ -62,7 +66,7 @@ async function diffSummary(tx: Tx, kind: MasterKind, records: (MasterRecord | Ow
 
 async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
   const costCentres = await tx.query<FinancialsContext['costCentres'][number]>(
-    'select cc_code, status, start_date::text as start_date, close_date::text as close_date from ccp.cost_centres',
+    'select cc_code, status, entity, start_date::text as start_date, close_date::text as close_date from ccp.cost_centres',
   );
   const gl = await tx.query<{ gl_group: string }>('select distinct gl_group from ccp.financials');
   // Periods with actuals: the register, plus any month that already holds actual figures
@@ -86,8 +90,16 @@ async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
   };
 }
 
+/** Entity of each cost centre, for splitting totals by legal entity. */
+function entityMap(ctx: FinancialsContext) {
+  const m = new Map(ctx.costCentres.map((c) => [c.cc_code, c.entity ?? 'ALL']));
+  return (cc: string) => m.get(cc) ?? 'ALL';
+}
+
 export interface ReconLine {
   period: string;
+  entity: string;
+  currency: string;
   actualTotal: number;
   tbTotal: number | null;
   difference: number | null;
@@ -101,14 +113,34 @@ export interface StageResult {
   rowCount: number;
   errors: Issue[];
   warnings: Issue[];
-  summary: { created: number; updated: number; unchanged: number; periods?: PeriodSummary[] };
+  summary: { created: number; updated: number; unchanged: number; periods?: PeriodSummary[]; runs?: AllocationRunSummary[] };
 }
 
 async function stageFinancials(tx: Tx, file: ParsedFile) {
   if (file.rows.length > MAX_FINANCIAL_ROWS) throw new UploadError(`Too many rows (max ${MAX_FINANCIAL_ROWS}).`);
-  const { records, errors, warnings } = validateFinancials(file, await loadFinancialsContext(tx));
-  const periods = errors.length ? [] : summarizePeriods(records);
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors, warnings } = validateFinancials(file, ctx);
+  const periods = errors.length ? [] : summarizePeriods(records, entityMap(ctx));
   return { errors, warnings, summary: { created: records.length, updated: 0, unchanged: 0, periods } };
+}
+
+async function loadAllocationsContext(tx: Tx): Promise<AllocationsContext> {
+  const costCentres = await tx.query<AllocationsContext['costCentres'][number]>(
+    'select cc_code, status, entity, type, close_date::text as close_date from ccp.cost_centres',
+  );
+  const [{ now }] = await tx.query<{ now: string }>(`select to_char(now(), 'YYYY-MM') as now`);
+  const actuals = await tx.query<{ k: string; total: string }>(
+    `select period || '|' || cc_code as k, sum(actual)::text as total from ccp.financials
+      where actual is not null group by period, cc_code`,
+  );
+  return { costCentres, currentPeriod: now, sourceActuals: Object.fromEntries(actuals.map((a) => [a.k, Number(a.total)])) };
+}
+
+async function stageAllocations(tx: Tx, file: ParsedFile) {
+  if (file.rows.length > MAX_ROWS) throw new UploadError(`Too many rows (max ${MAX_ROWS}).`);
+  const { records, errors, warnings } = validateAllocations(file, await loadAllocationsContext(tx));
+  const runs = errors.length ? [] : summarizeAllocations(records);
+  return { errors, warnings, summary: { created: records.length, updated: 0, unchanged: 0, runs } };
 }
 
 export async function stageUpload(tx: Tx, user: string, kind: BatchKind, fileName: string, data: Buffer): Promise<StageResult> {
@@ -118,6 +150,8 @@ export async function stageUpload(tx: Tx, user: string, kind: BatchKind, fileNam
   let summary: StageResult['summary'];
   if (kind === 'financials') {
     ({ errors, warnings, summary } = await stageFinancials(tx, file));
+  } else if (kind === 'allocations') {
+    ({ errors, warnings, summary } = await stageAllocations(tx, file));
   } else {
     if (file.rows.length > MAX_ROWS) throw new UploadError(`Too many rows (max ${MAX_ROWS}).`);
     const v = runValidation(kind, file, await loadExisting(tx));
@@ -164,23 +198,31 @@ async function currentUser(tx: Tx): Promise<string> {
 
 /** Compare uploaded CC actuals with the trial-balance totals stored for this batch. */
 async function reconcile(tx: Tx, batchId: string, periods: PeriodSummary[]): Promise<ReconLine[]> {
-  const tbRows = await tx.query<{ period: string; tb_total: string }>(
-    'select period, tb_total from ccp.trial_balances where batch_id = $1', [batchId],
+  const tbRows = await tx.query<{ period: string; entity: string; tb_total: string }>(
+    'select period, entity, tb_total from ccp.trial_balances where batch_id = $1', [batchId],
   );
-  const tb = new Map(tbRows.map((r) => [r.period, Number(r.tb_total)]));
+  const tb = new Map(tbRows.map((r) => [`${r.period}|${r.entity}`, Number(r.tb_total)]));
   const tol = reconTolerance();
   return periods
     .filter((p) => p.actualTotal !== null)
     .map((p) => {
-      const tbTotal = tb.has(p.period) ? tb.get(p.period)! : null;
+      const key = `${p.period}|${p.entity}`;
+      const tbTotal = tb.has(key) ? tb.get(key)! : null;
       const difference = tbTotal === null ? null : Math.round((p.actualTotal! - tbTotal) * 100) / 100;
-      return { period: p.period, actualTotal: p.actualTotal!, tbTotal, difference, matched: difference !== null && Math.abs(difference) <= tol };
+      return {
+        period: p.period, entity: p.entity, currency: p.currency, actualTotal: p.actualTotal!, tbTotal, difference,
+        matched: difference !== null && Math.abs(difference) <= tol,
+      };
     });
 }
 
+const reconLabel = (r: { period: string; entity: string }) => (r.entity === 'ALL' ? r.period : `${r.period} ${r.entity}`);
+
 /**
- * Preparer (the uploader) enters the trial-balance total for each period
- * that has actuals. Returns the reconciliation; does not publish.
+ * Preparer (the uploader) enters the trial-balance total for each period and
+ * entity that has actuals. Keys are "YYYY-MM|ENTITY" (e.g. "2026-09|IN"); a bare
+ * "YYYY-MM" is accepted when only one entity has actuals in that period.
+ * Returns the reconciliation; does not publish.
  */
 export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<string, number>) {
   if (!makerCheckerEnabled()) await tx.query(`select set_config('app.maker_checker', 'off', true)`);
@@ -190,19 +232,27 @@ export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<
   if (makerCheckerEnabled() && batch.uploaded_by !== me)
     throw new UploadError('Only the preparer who uploaded the file can enter the trial balance.');
 
-  const { records, errors } = validateFinancials(batch.payload, await loadFinancialsContext(tx));
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors } = validateFinancials(batch.payload, ctx);
   if (errors.length)
     throw new UploadError(`This file is no longer valid against the current data (${errors.length} error(s)). Discard it and upload again.`);
-  const periods = summarizePeriods(records);
-  const needed = new Set(periods.filter((p) => p.actualTotal !== null).map((p) => p.period));
-  for (const [period, value] of Object.entries(totals)) {
-    if (!needed.has(period)) throw new UploadError(`Period ${period} has no actuals in this upload.`);
-    if (typeof value !== 'number' || !Number.isFinite(value)) throw new UploadError(`Trial balance for ${period} must be a number.`);
-    if (Math.abs(value) >= MAX_AMOUNT) throw new UploadError(`Trial balance for ${period} is too large.`);
+  const periods = summarizePeriods(records, entityMap(ctx));
+  const needed = periods.filter((p) => p.actualTotal !== null);
+  for (const [rawKey, value] of Object.entries(totals)) {
+    const [period, entityIn] = rawKey.split('|');
+    const candidates = needed.filter((p) => p.period === period && (!entityIn || p.entity === entityIn.toUpperCase()));
+    if (candidates.length === 0)
+      throw new UploadError(`${entityIn ? `${period} ${entityIn}` : `Period ${period}`} has no actuals in this upload.`);
+    if (candidates.length > 1)
+      throw new UploadError(`${period} has actuals for several entities (${candidates.map((c) => c.entity).join(', ')}) — enter a trial balance for each entity.`);
+    const { entity } = candidates[0];
+    const label = reconLabel(candidates[0]);
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new UploadError(`Trial balance for ${label} must be a number.`);
+    if (Math.abs(value) >= MAX_AMOUNT) throw new UploadError(`Trial balance for ${label} is too large.`);
     await tx.query(
-      `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by) values ($1, $2, $3, ccp.app_email())
-       on conflict (batch_id, period) do update set tb_total = excluded.tb_total, entered_by = excluded.entered_by, entered_at = now()`,
-      [batchId, period, roundMoney(value)],
+      `insert into ccp.trial_balances (batch_id, period, entity, tb_total, entered_by) values ($1, $2, $3, $4, ccp.app_email())
+       on conflict (batch_id, period, entity) do update set tb_total = excluded.tb_total, entered_by = excluded.entered_by, entered_at = now()`,
+      [batchId, period, entity, roundMoney(value)],
     );
   }
   const recon = await reconcile(tx, batchId, periods);
@@ -218,9 +268,10 @@ export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<
 }
 
 async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
-  const { records, errors } = validateFinancials(batch.payload, await loadFinancialsContext(tx));
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors } = validateFinancials(batch.payload, ctx);
   if (errors.length) return { published: false as const, errors };
-  const periods = summarizePeriods(records);
+  const periods = summarizePeriods(records, entityMap(ctx));
 
   // Stale-batch guard: never let an older upload overwrite a period that was
   // published after this file was prepared.
@@ -230,7 +281,7 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
       where b.kind = 'financials' and b.status = 'Published' and b.id <> $1
         and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
         and e->>'period' = any ($2)`,
-    [batchId, periods.map((p) => p.period)],
+    [batchId, [...new Set(periods.map((p) => p.period))]],
   );
   if (newer.length) {
     return {
@@ -250,35 +301,80 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
       published: false as const,
       errors: [] as Issue[],
       reconciliation: recon,
-      error: `Publishing blocked: ${blocked.map((r) => (r.tbTotal === null ? `${r.period} has no trial balance entered` : `${r.period} differs from the trial balance by ${r.difference}`)).join('; ')}.`,
+      error: `Publishing blocked: ${blocked.map((r) => (r.tbTotal === null ? `${reconLabel(r)} has no trial balance entered` : `${reconLabel(r)} differs from the trial balance by ${r.difference}`)).join('; ')}.`,
     };
   }
 
-  const periodList = periods.map((p) => p.period);
-  const before = await tx.query<{ period: string; budget: string; actual: string | null }>(
-    `select period, sum(budget)::text as budget, sum(actual)::text as actual
-       from ccp.financials where period = any ($1) group by period`, [periodList],
+  const periodList = [...new Set(periods.map((p) => p.period))];
+  const before = await tx.query<{ period: string; entity: string; budget: string; actual: string | null }>(
+    `select f.period, c.entity, sum(f.budget)::text as budget, sum(f.actual)::text as actual
+       from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+      where f.period = any ($1) group by f.period, c.entity order by 1, 2`, [periodList],
+  );
+  const recordsJson = JSON.stringify(records satisfies FinancialRecord[]);
+  // Line-level history: every line this publish adds, changes or removes
+  const [{ n: changedLines }] = await tx.query<{ n: number }>(
+    `with o as (select cc_code, period, gl_group, budget, actual from ccp.financials where period = any ($2)),
+          n as (select * from jsonb_to_recordset($3::jsonb) as r(cc_code text, period text, gl_group text, budget numeric, actual numeric)),
+          ins as (
+            insert into ccp.financials_history
+                   (batch_id, cc_code, period, gl_group, old_budget, old_actual, new_budget, new_actual, change, changed_by)
+            select $1, coalesce(o.cc_code, n.cc_code), coalesce(o.period, n.period), coalesce(o.gl_group, n.gl_group),
+                   o.budget, o.actual, n.budget, n.actual,
+                   case when o.cc_code is null then 'added' when n.cc_code is null then 'removed' else 'changed' end,
+                   ccp.app_email()
+              from o full outer join n
+                on o.cc_code = n.cc_code and o.period = n.period and o.gl_group = n.gl_group
+             where o.cc_code is null or n.cc_code is null
+                or o.budget is distinct from n.budget or o.actual is distinct from n.actual
+            returning 1)
+     select count(*)::int as n from ins`,
+    [batchId, periodList, recordsJson],
   );
   await tx.query('delete from ccp.financials where period = any ($1)', [periodList]);
   await tx.query(
     `insert into ccp.financials (cc_code, period, gl_group, budget, actual)
      select cc_code, period, gl_group, budget, actual
        from jsonb_to_recordset($1::jsonb) as r(cc_code text, period text, gl_group text, budget numeric, actual numeric)`,
-    [JSON.stringify(records satisfies FinancialRecord[])],
+    [recordsJson],
   );
   for (const r of recon) {
+    // The period is now reconciled entity by entity; drop any pre-Phase-3 combined row
+    await tx.query(`delete from ccp.periods where period = $1 and entity = 'ALL'`, [r.period]);
     await tx.query(
-      `insert into ccp.periods (period, actual_total, tb_total, batch_id, published_by, published_at)
-       values ($1, $2, $3, $4, ccp.app_email(), now())
-       on conflict (period) do update set actual_total = excluded.actual_total, tb_total = excluded.tb_total,
+      `insert into ccp.periods (period, entity, actual_total, tb_total, batch_id, published_by, published_at)
+       values ($1, $2, $3, $4, $5, ccp.app_email(), now())
+       on conflict (period, entity) do update set actual_total = excluded.actual_total, tb_total = excluded.tb_total,
          batch_id = excluded.batch_id, published_by = excluded.published_by, published_at = now()`,
-      [r.period, r.actualTotal, r.tbTotal, batchId],
+      [r.period, r.entity, r.actualTotal, r.tbTotal, batchId],
     );
   }
   return {
     published: true as const,
-    summary: { created: records.length, updated: 0, unchanged: 0, periods, reconciliation: recon, before },
+    summary: { created: records.length, updated: 0, unchanged: 0, periods, reconciliation: recon, before, changedLines },
   };
+}
+
+async function publishAllocations(tx: Tx, batch: BatchRow) {
+  const { records, errors } = validateAllocations(batch.payload, await loadAllocationsContext(tx));
+  if (errors.length) return { published: false as const, errors };
+  const runs = summarizeAllocations(records);
+  const recordsJson = JSON.stringify(records satisfies AllocationRecord[]);
+  // Replace each allocation run (period × source) the file contains; row triggers audit every change
+  const [{ n: removed }] = await tx.query<{ n: number }>(
+    `with runs as (select distinct period, source_cc from jsonb_to_recordset($1::jsonb) as r(period text, source_cc text)),
+          del as (delete from ccp.allocations a using runs
+                   where a.period = runs.period and a.source_cc = runs.source_cc returning 1)
+     select count(*)::int as n from del`,
+    [recordsJson],
+  );
+  await tx.query(
+    `insert into ccp.allocations (cc_code, period, source_cc, amount, basis)
+     select cc_code, period, source_cc, amount, basis
+       from jsonb_to_recordset($1::jsonb) as r(cc_code text, period text, source_cc text, amount numeric, basis text)`,
+    [recordsJson],
+  );
+  return { published: true as const, summary: { created: records.length, updated: 0, unchanged: 0, removed, runs } };
 }
 
 /**
@@ -294,6 +390,13 @@ export async function publishUpload(tx: Tx, batchId: string) {
   if (makerCheckerEnabled() && batch.uploaded_by === me)
     throw new UploadError('Segregation of duties: a different Finance user must approve and publish this upload.');
 
+  if (batch.kind === 'allocations') {
+    const result = await publishAllocations(tx, batch);
+    if (result.published) await markPublished(tx, batchId, result.summary);
+    else await markRejected(tx, batchId, result.errors);
+    return result;
+  }
+
   if (batch.kind === 'financials') {
     const result = await publishFinancials(tx, batchId, batch);
     if (result.published) {
@@ -304,14 +407,15 @@ export async function publishUpload(tx: Tx, batchId: string) {
     return result;
   }
 
-  const { records, errors } = runValidation(batch.kind, batch.payload, await loadExisting(tx));
+  const kind = batch.kind as MasterKind;
+  const { records, errors } = runValidation(kind, batch.payload, await loadExisting(tx));
   if (errors.length) {
     await markRejected(tx, batchId, errors);
     return { published: false as const, errors };
   }
-  const summary = await diffSummary(tx, batch.kind, records);
+  const summary = await diffSummary(tx, kind, records);
 
-  if (batch.kind === 'master') {
+  if (kind === 'master') {
     for (const r of records as MasterRecord[]) {
       await tx.query(
         `insert into ccp.cost_centres (cc_code, cc_alias, entity, bu, department, type, keywords, status, start_date, close_date)
@@ -363,6 +467,8 @@ export interface PendingBatch {
   row_count: number;
   summary: StageResult['summary'] & { warnings?: Issue[]; reconciliation?: ReconLine[]; reconciled?: boolean };
 }
+
+export { currencyOf };
 
 /** Validated uploads waiting for approval (Finance only via RLS). */
 export async function pendingBatches(tx: Tx): Promise<PendingBatch[]> {

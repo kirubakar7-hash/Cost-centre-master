@@ -10,6 +10,7 @@
  */
 import { checkHeaders, type Issue, type ValidationResult } from './validate';
 import type { ParsedFile } from './parse';
+import { currencyOf } from '../currency';
 
 export interface FinancialRecord {
   cc_code: string;
@@ -20,7 +21,7 @@ export interface FinancialRecord {
 }
 
 export interface FinancialsContext {
-  costCentres: { cc_code: string; status: string; start_date: string; close_date: string | null }[];
+  costCentres: { cc_code: string; status: string; start_date: string; close_date: string | null; entity?: string }[];
   knownGlGroups: string[];
   /** Periods that already have published actuals */
   publishedPeriods: string[];
@@ -33,8 +34,15 @@ export interface FinancialsContext {
   existingCcsByPeriod?: Record<string, string[]>;
 }
 
+/**
+ * Totals for one period and one legal entity. Entities keep separate books in
+ * their own currency, so they are summarised and reconciled separately.
+ */
 export interface PeriodSummary {
   period: string;
+  /** IN / US / UK, or 'ALL' when no entity map was supplied */
+  entity: string;
+  currency: string;
   rows: number;
   costCentres: number;
   budgetTotal: number;
@@ -98,10 +106,15 @@ export function roundMoney(n: number): number {
 const toCents = (n: number) => BigInt(Math.round(n * 100));
 const MAX_CENTS = BigInt(MAX_AMOUNT) * 100n;
 
-function periodTotals(records: FinancialRecord[]) {
-  const by = new Map<string, { rows: number; ccs: Set<string>; budget: bigint; actual: bigint; hasActual: boolean }>();
+type EntityOf = (cc: string) => string;
+
+/** Totals keyed by "period|entity". */
+function periodTotals(records: FinancialRecord[], entityOf: EntityOf = () => 'ALL') {
+  const by = new Map<string, { period: string; entity: string; rows: number; ccs: Set<string>; budget: bigint; actual: bigint; hasActual: boolean }>();
   for (const r of records) {
-    const p = by.get(r.period) ?? { rows: 0, ccs: new Set<string>(), budget: 0n, actual: 0n, hasActual: false };
+    const entity = entityOf(r.cc_code);
+    const key = `${r.period}|${entity}`;
+    const p = by.get(key) ?? { period: r.period, entity, rows: 0, ccs: new Set<string>(), budget: 0n, actual: 0n, hasActual: false };
     p.rows++;
     p.ccs.add(r.cc_code);
     p.budget += toCents(r.budget);
@@ -109,19 +122,22 @@ function periodTotals(records: FinancialRecord[]) {
       p.actual += toCents(r.actual);
       p.hasActual = true;
     }
-    by.set(r.period, p);
+    by.set(key, p);
   }
   return by;
 }
 
 const absBig = (n: bigint) => (n < 0n ? -n : n);
 
-export function summarizePeriods(records: FinancialRecord[]): PeriodSummary[] {
-  const by = periodTotals(records);
+/** One summary per period and entity (sorted). Pass entityOf to split by legal entity. */
+export function summarizePeriods(records: FinancialRecord[], entityOf?: EntityOf): PeriodSummary[] {
+  const by = periodTotals(records, entityOf);
   return [...by.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([period, p]) => ({
-      period,
+    .map(([, p]) => ({
+      period: p.period,
+      entity: p.entity,
+      currency: p.entity === 'ALL' ? '' : currencyOf(p.entity),
       rows: p.rows,
       costCentres: p.ccs.size,
       budgetTotal: Number(p.budget) / 100,
@@ -215,17 +231,21 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
       errors.push({ row: null, column: 'Actual', code: 'WOULD_REMOVE_ACTUALS', message: `Period ${period} already has published actuals; this budget-only file would remove them. Include the actuals for ${period}.` });
   }
 
-  // Period totals must fit the same limit as a trial-balance total, or the batch could
-  // never be reconciled and published.
-  const totals = periodTotals(records.filter((r) => r.period));
-  for (const [period, t] of totals) {
-    if (absBig(t.budget) >= MAX_CENTS || absBig(t.actual) >= MAX_CENTS)
-      errors.push({ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE', message: `The total for ${period} is too large to reconcile. Check for a pasted account number or a missing decimal point.` });
+  // Period totals (per entity) must fit the same limit as a trial-balance total, or the
+  // batch could never be reconciled and published.
+  const entityOf: EntityOf = (cc) => ccs.get(cc)?.entity ?? 'ALL';
+  const withPeriod = records.filter((r) => r.period);
+  for (const t of periodTotals(withPeriod, entityOf).values()) {
+    if (absBig(t.budget) >= MAX_CENTS || absBig(t.actual) >= MAX_CENTS) {
+      const scope = t.entity === 'ALL' ? t.period : `${t.period} (${t.entity})`;
+      errors.push({ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE', message: `The total for ${scope} is too large to reconcile. Check for a pasted account number or a missing decimal point.` });
+    }
   }
 
   // Each upload replaces whole periods: refuse a file that would silently delete other
   // cost centres' figures for a period it touches.
-  for (const [period, t] of totals) {
+  for (const t of periodTotals(withPeriod).values()) {
+    const period = t.period;
     const missing = (ctx.existingCcsByPeriod?.[period] ?? []).filter((cc) => !t.ccs.has(cc)).sort();
     if (missing.length) {
       const list = missing.slice(0, 10).join(', ') + (missing.length > 10 ? ` and ${missing.length - 10} more` : '');

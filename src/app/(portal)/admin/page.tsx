@@ -6,13 +6,14 @@ import { UploadPanel } from '@/components/UploadPanel';
 import { PendingApprovals, type Pending } from '@/components/admin/PendingApprovals';
 import { makerCheckerEnabled, reconTolerance } from '@/lib/config';
 import { pendingBatches } from '@/lib/upload/service';
+import { currencyOf } from '@/lib/currency';
 import { TEMPLATES } from '@/lib/upload/templates';
 
 export const dynamic = 'force-dynamic';
 
 interface Stats { active: number; inactive: number; no_owner: number; failed_30d: number }
 interface Batch { id: string; kind: string; file_name: string; uploaded_by: string; uploaded_at: string; status: string; row_count: number; error_count: number; approved_by: string | null }
-interface PeriodRow { period: string; actual_total: string; tb_total: string; published_by: string; published_at: string }
+interface PeriodRow { period: string; entity: string; actual_total: string; tb_total: string; published_by: string; published_at: string }
 interface Exception { cc_code: string; cc_alias: string; issue: string }
 
 export default async function AdminPage() {
@@ -32,8 +33,8 @@ export default async function AdminPage() {
              status, row_count, error_count, approved_by
         from ccp.upload_batches where file_sha256 <> 'seed' order by uploaded_at desc limit 10`);
     const periods = await tx.query<PeriodRow>(`
-      select period, actual_total::text, tb_total::text, published_by, to_char(published_at, 'DD Mon YYYY HH24:MI') as published_at
-        from ccp.periods order by period desc limit 12`);
+      select period, entity, actual_total::text, tb_total::text, published_by, to_char(published_at, 'DD Mon YYYY HH24:MI') as published_at
+        from ccp.periods order by period desc, entity limit 24`);
     const pending = (await pendingBatches(tx)) as unknown as Pending[];
     const exceptions = await tx.query<Exception>(`
       select c.cc_code, c.cc_alias, 'Active cost centre has no owner' as issue
@@ -104,12 +105,13 @@ export default async function AdminPage() {
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-sm">
             <thead className="text-xs text-muted">
-              <tr><th className="py-1 pr-3">Period</th><th className="pr-3 text-right">CC actuals</th><th className="pr-3 text-right">Trial balance</th><th className="pr-3">Status</th><th className="pr-3">Published by</th><th>When</th></tr>
+              <tr><th className="py-1 pr-3">Period</th><th className="pr-3">Entity</th><th className="pr-3 text-right">CC actuals</th><th className="pr-3 text-right">Trial balance</th><th className="pr-3">Status</th><th className="pr-3">Published by</th><th>When</th></tr>
             </thead>
             <tbody>
               {periods.map((p) => (
-                <tr key={p.period} className="border-theme border-t">
+                <tr key={`${p.period}|${p.entity}`} className="border-theme border-t">
                   <td className="py-1.5 pr-3 font-medium">{p.period}</td>
+                  <td className="pr-3 whitespace-nowrap">{p.entity === 'ALL' ? 'All (pre-Phase 3)' : <>{p.entity} <span className="text-xs text-muted">· {currencyOf(p.entity)}</span></>}</td>
                   <td className="pr-3 text-right">{Number(p.actual_total).toLocaleString('en-IN')}</td>
                   <td className="pr-3 text-right">{Number(p.tb_total).toLocaleString('en-IN')}</td>
                   {(() => {
@@ -120,7 +122,7 @@ export default async function AdminPage() {
                   <td className="whitespace-nowrap">{p.published_at}</td>
                 </tr>
               ))}
-              {periods.length === 0 && <tr><td colSpan={6} className="py-2 text-muted">No periods published yet.</td></tr>}
+              {periods.length === 0 && <tr><td colSpan={7} className="py-2 text-muted">No periods published yet.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -159,7 +161,7 @@ export default async function AdminPage() {
               {batches.map((b) => (
                 <tr key={b.id} className="border-theme border-t">
                   <td className="py-1.5 pr-3 whitespace-nowrap">{b.uploaded_at}</td>
-                  <td className="pr-3">{b.kind === 'master' ? 'Master' : b.kind === 'owners' ? 'Owners' : 'Financials'}</td>
+                  <td className="pr-3">{b.kind === 'master' ? 'Master' : b.kind === 'owners' ? 'Owners' : b.kind === 'allocations' ? 'Allocations' : 'Financials'}</td>
                   <td className="pr-3 max-w-[200px] truncate" title={b.file_name}>{b.file_name}</td>
                   <td className="pr-3">{b.uploaded_by}</td>
                   <td className="pr-3">{b.row_count}</td>

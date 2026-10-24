@@ -3,7 +3,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { IssueTable } from './admin/IssueTable';
 import { ReconTable } from './admin/ReconTable';
-import { KIND_LABEL, type Issue, type Kind, type PeriodSummary, type ReconLine } from './admin/types';
+import { AllocationRunsTable } from './admin/AllocationRunsTable';
+import { KIND_LABEL, tbKey, type AllocationRun, type Issue, type Kind, type PeriodSummary, type ReconLine } from './admin/types';
 
 interface Staged {
   batchId: string;
@@ -12,7 +13,7 @@ interface Staged {
   rowCount: number;
   errors: Issue[];
   warnings: Issue[];
-  summary: { created: number; updated: number; unchanged: number; periods?: PeriodSummary[] };
+  summary: { created: number; updated: number; unchanged: number; periods?: PeriodSummary[]; runs?: AllocationRun[] };
 }
 
 type Msg = { ok: boolean; text: string } | null;
@@ -65,7 +66,7 @@ export function UploadPanel({ makerChecker }: { makerChecker: boolean }) {
     setMessage(
       data.reconciled
         ? { ok: true, text: makerChecker ? 'Reconciled to the trial balance. Submitted for approval — another Finance user must publish it.' : 'Reconciled to the trial balance. You can publish.' }
-        : { ok: false, text: 'Does not reconcile. Publishing is blocked until CC actuals equal the trial balance for every period. Correct the TB total or fix the file and upload again.' },
+        : { ok: false, text: 'Does not reconcile. Publishing is blocked until CC actuals equal the trial balance for every period and entity. Correct the TB total or fix the file and upload again.' },
     );
     router.refresh();
   };
@@ -115,7 +116,14 @@ export function UploadPanel({ makerChecker }: { makerChecker: boolean }) {
       {kind === 'financials' && !staged && (
         <p className="text-xs text-muted">
           Tally export mapped by CC_Code. Each upload <strong>replaces every line for every period it contains</strong>. Periods with
-          actuals must reconcile to the trial balance before they can be published.
+          actuals must reconcile, entity by entity, to that entity&apos;s trial balance before they can be published.
+        </p>
+      )}
+      {kind === 'allocations' && !staged && (
+        <p className="text-xs text-muted">
+          Shared-service recharges. Each upload <strong>replaces the allocations of every source cost centre for every period it
+          contains</strong>, so each allocation run (e.g. IT, rent) can be loaded on its own. Source and receiving cost centres must be in
+          the same entity.
         </p>
       )}
 
@@ -134,13 +142,15 @@ export function UploadPanel({ makerChecker }: { makerChecker: boolean }) {
               <span className="font-semibold text-brand dark:text-brand-light">
                 ✓ Validated {staged.rowCount} row(s)
                 {staged.kind === 'financials'
-                  ? ` across ${periods.length} period(s).`
+                  ? ` across ${new Set(periods.map((p) => p.period)).size} period(s).`
+                  : staged.kind === 'allocations'
+                  ? ` in ${staged.summary.runs?.length ?? 0} allocation run(s).`
                   : `: ${staged.summary.created} new, ${staged.summary.updated} updated, ${staged.summary.unchanged} unchanged.`}
               </span>
               <span className="ml-auto flex flex-wrap gap-2">
                 <button type="button" className="btn-secondary" disabled={busy} onClick={() => act('discard')}>Discard</button>
                 {staged.kind === 'financials' && needsTb && (
-                  <button type="button" className="btn-primary" disabled={busy || periods.some((p) => p.actualTotal !== null && !tb[p.period])} onClick={reconcile}>
+                  <button type="button" className="btn-primary" disabled={busy || periods.some((p) => p.actualTotal !== null && !tb[tbKey(p)])} onClick={reconcile}>
                     Reconcile to TB
                   </button>
                 )}
@@ -158,6 +168,9 @@ export function UploadPanel({ makerChecker }: { makerChecker: boolean }) {
                 ? 'Nothing would change — discard this upload.'
                 : 'Submitted for approval. Maker-checker is on: another Finance user must review and publish it under “Awaiting approval”.'}
             </p>
+          )}
+          {staged.kind === 'allocations' && staged.status === 'Validated' && (staged.summary.runs?.length ?? 0) > 0 && (
+            <AllocationRunsTable runs={staged.summary.runs!} />
           )}
           {staged.kind === 'financials' && staged.status === 'Validated' && periods.length > 0 && (
             <ReconTable periods={periods} recon={recon} tb={tb} onTbChange={(p, v) => setTb((t) => ({ ...t, [p]: v }))} />

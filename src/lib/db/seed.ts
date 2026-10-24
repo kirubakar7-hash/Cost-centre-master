@@ -169,9 +169,10 @@ export async function seedData(tx: Tx) {
        returning id`,
     );
     await tx.query(
-      `insert into ccp.periods (period, actual_total, tb_total, batch_id, published_by)
-       select period, sum(actual), sum(actual), $1, 'seed@system'
-         from ccp.financials where actual is not null group by period`,
+      `insert into ccp.periods (period, entity, actual_total, tb_total, batch_id, published_by)
+       select f.period, c.entity, sum(f.actual), sum(f.actual), $1, 'seed@system'
+         from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+        where f.actual is not null group by f.period, c.entity`,
       [id],
     );
   }

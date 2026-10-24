@@ -1,4 +1,4 @@
-export type UploadKind = 'master' | 'owners' | 'financials';
+export type UploadKind = 'master' | 'owners' | 'financials' | 'allocations';
 
 export interface TemplateDef {
   kind: UploadKind;
@@ -50,9 +50,22 @@ export const TEMPLATES: Record<UploadKind, TemplateDef> = {
       { key: 'Period', required: true, help: 'YYYY-MM (or Oct-2026). One file may hold several periods, e.g. a month of actuals or a full-year budget.', example: ['2026-10', '2026-10'] },
       { key: 'GL_Group', required: true, help: 'GL group as mapped from the Tally export', example: ['Employee Costs', 'Travel & Conveyance'] },
       { key: 'Budget', required: true, help: 'Number (commas, currency symbols and (brackets) for negatives are accepted). Required on every row — enter 0 if there is no budget.', example: ['1800000', '120000'] },
-      { key: 'Actual', required: true, help: 'Number. Leave blank ONLY for budget-only (future) months; in a month with actuals enter 0, not blank. CC actuals per period must equal the trial balance.', example: ['1765000', '158400'] },
+      { key: 'Actual', required: true, help: 'Number. Leave blank ONLY for budget-only (future) months; in a month with actuals enter 0, not blank. CC actuals per period and entity must equal that entity\'s trial balance.', example: ['1765000', '158400'] },
     ],
   },
+  allocations: {
+    kind: 'allocations',
+    title: 'Allocations',
+    sheet: 'Allocations',
+    fileName: 'SolidPro_CC_Allocations_Template.xlsx',
+    columns: [
+      { key: 'CC_Code', required: true, help: 'Receiving cost centre. Must exist, be in the same entity as the source, and be open in that period.', example: ['IN-ENG-101', 'IN-ENG-102'] },
+      { key: 'Period', required: true, help: 'YYYY-MM (or Oct-2026). Not a future month. Each upload replaces the allocations for every period × Source_CC it contains (one allocation run per source).', example: ['2026-10', '2026-10'] },
+      { key: 'Source_CC', required: true, help: 'Shared-service cost centre the recharge comes from (normally type Shared or Allocated). Cross-entity recharges must be booked as intercompany instead.', example: ['IN-SSV-302', 'IN-SSV-302'] },
+      { key: 'Amount', required: true, help: 'Amount recharged in the entity\'s own currency. Negative for a reversal; 0 is not allowed (leave the line out).', example: ['145000', '62000'] },
+      { key: 'Basis', required: true, help: 'How the amount was worked out, up to 120 characters (e.g. "Headcount 42 of 118").', example: ['Headcount (42 of 118)', 'Headcount (18 of 118)'] },
+    ],
+  }
 };
 
 /** Build a template workbook: data sheet (headers + examples) + Instructions sheet. */

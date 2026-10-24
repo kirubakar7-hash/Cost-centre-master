@@ -2,7 +2,8 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { ReconTable } from './ReconTable';
-import { KIND_LABEL, type Issue, type Kind, type PeriodSummary, type ReconLine } from './types';
+import { AllocationRunsTable } from './AllocationRunsTable';
+import { KIND_LABEL, tbKey, type AllocationRun, type Issue, type Kind, type PeriodSummary, type ReconLine } from './types';
 
 export interface Pending {
   id: string;
@@ -14,7 +15,7 @@ export interface Pending {
   row_count: number;
   summary: {
     created: number; updated: number; unchanged: number;
-    periods?: PeriodSummary[]; reconciliation?: ReconLine[]; reconciled?: boolean; warnings?: Issue[];
+    periods?: PeriodSummary[]; runs?: AllocationRun[]; reconciliation?: ReconLine[]; reconciled?: boolean; warnings?: Issue[];
   };
 }
 
@@ -84,7 +85,7 @@ export function PendingApprovals({ items, me, makerChecker }: { items: Pending[]
                 <div className="text-xs text-muted">
                   Uploaded by {b.uploaded_by} on {b.uploaded_at} · {b.row_count} rows · SHA-256 {b.file_sha256.slice(0, 12)}… · Batch {b.id.slice(0, 8)}
                 </div>
-                {b.kind !== 'financials' && (
+                {(b.kind === 'master' || b.kind === 'owners') && (
                   <div className="mt-1">{b.summary.created} new, {b.summary.updated} updated, {b.summary.unchanged} unchanged</div>
                 )}
               </div>
@@ -96,6 +97,9 @@ export function PendingApprovals({ items, me, makerChecker }: { items: Pending[]
               </div>
             </div>
             {blockedReason && <p className="mt-2 text-xs text-muted">{blockedReason}</p>}
+            {b.kind === 'allocations' && (b.summary.runs?.length ?? 0) > 0 && (
+              <div className="mt-3"><AllocationRunsTable runs={b.summary.runs!} /></div>
+            )}
             {periods.length > 0 && (
               <div className="mt-3 space-y-2">
                 {own && needsTb && !reconciled ? (
@@ -109,7 +113,7 @@ export function PendingApprovals({ items, me, makerChecker }: { items: Pending[]
                     <button
                       type="button"
                       className="btn-primary"
-                      disabled={busy === b.id || periods.some((p) => p.actualTotal !== null && !tb[b.id]?.[p.period])}
+                      disabled={busy === b.id || periods.some((p) => p.actualTotal !== null && !tb[b.id]?.[tbKey(p)])}
                       onClick={() => reconcile(b.id)}
                     >
                       Reconcile to TB

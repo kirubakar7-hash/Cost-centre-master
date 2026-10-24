@@ -53,7 +53,7 @@ export function normalizeDate(input: string): string | null {
 
 const canon = (value: string, allowed: string[]) => allowed.find((a) => a.toLowerCase() === value.trim().toLowerCase());
 
-export function checkHeaders(file: ParsedFile, kind: 'master' | 'owners' | 'financials'): Issue[] {
+export function checkHeaders(file: ParsedFile, kind: 'master' | 'owners' | 'financials' | 'allocations'): Issue[] {
   const missing = TEMPLATES[kind].columns.filter((c) => c.required && !file.headers.includes(c.key)).map((c) => c.key);
   const issues: Issue[] = missing.map((col) => ({
     row: null, column: col, code: 'MISSING_COLUMN',
