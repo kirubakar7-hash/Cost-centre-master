@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { withUser } from '@/lib/db';
 import { requireUser } from '@/lib/session';
-import { availablePeriods, consolidate, listMyCostCentres, type CcSummary } from '@/lib/financials';
+import { availablePeriods, consolidate, latestPeriod, listMyCostCentres, type CcSummary } from '@/lib/financials';
 import { currencyOf, ENTITY_CURRENCY } from '@/lib/currency';
 import { fiscalYear, periodLabel, variance } from '@/lib/fiscal';
 import { resolveAsOf } from '@/components/cc/period';
@@ -51,7 +51,7 @@ export default async function MyCostCentresPage({ searchParams }: { searchParams
 
   const { periods, asOf, rows } = await withUser(user.email, async (tx) => {
     const periods = await availablePeriods(tx);
-    const asOf = resolveAsOf(period, periods);
+    const asOf = resolveAsOf(period, periods, await latestPeriod(tx));
     const rows = await listMyCostCentres(tx, asOf);
     return { periods, asOf, rows };
   });

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { withUser } from '@/lib/db';
 import { requireUser } from '@/lib/session';
-import { availablePeriods, getDetail, getGlBreakdown, getMonthlyTrend, getTotals } from '@/lib/financials';
+import { availablePeriods, getDetail, getGlBreakdown, getMonthlyTrend, getTotals, latestPeriod } from '@/lib/financials';
 import { canComment, commentableGlGroups, listComments } from '@/lib/comments';
 import { allocationsReceived, allocationTotals } from '@/lib/allocations';
 import { currencyOf } from '@/lib/currency';
@@ -39,7 +39,7 @@ export default async function CostCentreDetailPage({ params, searchParams }: { p
       return null;
     }
     const periods = await availablePeriods(tx);
-    const asOf = resolveAsOf(period, periods);
+    const asOf = resolveAsOf(period, periods, await latestPeriod(tx));
     const totals = await getTotals(tx, code, asOf);
     const gl = await getGlBreakdown(tx, code, asOf);
     const trend = await getMonthlyTrend(tx, code, asOf);

@@ -10,6 +10,7 @@ import {
   type GlLine,
   type Totals,
   type TrendPoint,
+  latestPeriod,
 } from '@/lib/financials';
 import { listComments, type VarianceComment } from '@/lib/comments';
 import { allocationsReceived, allocationTotals, type AllocationReceived } from '@/lib/allocations';
@@ -42,7 +43,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ code: string }>
         await tx.query(`select ccp.log_event('ACCESS_DENIED', 'cost_centre', $1)`, [code]);
         return null;
       }
-      const asOf = resolveAsOf(requested, await availablePeriods(tx));
+      const asOf = resolveAsOf(requested, await availablePeriods(tx), await latestPeriod(tx));
       const totals = await getTotals(tx, code, asOf);
       const gl = await getGlBreakdown(tx, code, asOf);
       const trend = await getMonthlyTrend(tx, code, asOf);

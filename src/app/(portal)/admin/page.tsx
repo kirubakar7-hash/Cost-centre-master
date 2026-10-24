@@ -6,7 +6,7 @@ import { UploadPanel } from '@/components/UploadPanel';
 import { PendingApprovals, type Pending } from '@/components/admin/PendingApprovals';
 import { makerCheckerEnabled, reconTolerance } from '@/lib/config';
 import { pendingBatches } from '@/lib/upload/service';
-import { currencyOf } from '@/lib/currency';
+import { currencyOf, formatMoney } from '@/lib/currency';
 import { TEMPLATES } from '@/lib/upload/templates';
 
 export const dynamic = 'force-dynamic';
@@ -112,8 +112,8 @@ export default async function AdminPage() {
                 <tr key={`${p.period}|${p.entity}`} className="border-theme border-t">
                   <td className="py-1.5 pr-3 font-medium">{p.period}</td>
                   <td className="pr-3 whitespace-nowrap">{p.entity === 'ALL' ? 'All (pre-Phase 3)' : <>{p.entity} <span className="text-xs text-muted">· {currencyOf(p.entity)}</span></>}</td>
-                  <td className="pr-3 text-right">{Number(p.actual_total).toLocaleString('en-IN')}</td>
-                  <td className="pr-3 text-right">{Number(p.tb_total).toLocaleString('en-IN')}</td>
+                  <td className="pr-3 text-right">{formatMoney(Number(p.actual_total), currencyOf(p.entity))}</td>
+                  <td className="pr-3 text-right">{formatMoney(Number(p.tb_total), currencyOf(p.entity))}</td>
                   {(() => {
                     const ok = Math.abs(Number(p.actual_total) - Number(p.tb_total)) <= reconTolerance();
                     return <td className={`pr-3 font-semibold ${ok ? 'text-brand dark:text-brand-light' : 'text-accent'}`}>{ok ? '✓ Reconciled' : '✗ Difference'}</td>;

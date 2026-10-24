@@ -433,6 +433,55 @@ describe('financials publish: other scenarios', () => {
     ]);
   });
 
+  it('stale-batch guard: an older September US file cannot overwrite one published after it was prepared', async () => {
+    const US_CCS = ['US-ENG-201', 'US-SSV-401', 'US-SAL-601'];
+    const mk = (base: number) => fullPeriod('2026-09', (i) => `${base + i}`).filter((l) => US_CCS.includes(l.CC_Code));
+    const older = await h.stage(mk(7000));
+    const newer = await h.stage(mk(8000));
+    for (const [b, lines] of [[older, mk(7000)], [newer, mk(8000)]] as const)
+      expect((await h.enterTb(b.batchId, { '2026-09|US': total(lines.map((l) => l.Actual)) })).reconciled).toBe(true);
+    expect((await h.publish(newer.batchId)).published).toBe(true);
+    const usAfter = await h.rows(`period = '2026-09' and cc_code like 'US-%'`);
+    const out = await h.publish(older.batchId);
+    expect(out.published).toBe(false);
+    expect((out as { error?: string }).error).toMatch(/2026-09 US was published after this file was prepared/);
+    expect(await h.rows(`period = '2026-09' and cc_code like 'US-%'`)).toEqual(usAfter);
+    // An India file for the same month is not blocked by the newer US publish
+    const IN_ONLY = fullPeriod('2026-09', (i) => `${6000 + i}`).filter((l) => !US_CCS.includes(l.CC_Code));
+    const india = await h.stage(IN_ONLY);
+    expect((await h.enterTb(india.batchId, { '2026-09': total(IN_ONLY.map((l) => l.Actual)) })).reconciled).toBe(true);
+    expect((await h.publish(india.batchId)).published).toBe(true);
+  });
+
+  it('every change to the period register is audited with the batch id', async () => {
+    const US_CCS = ['US-ENG-201', 'US-SSV-401', 'US-SAL-601'];
+    const lines = fullPeriod('2026-09', (i) => `${9100 + i}`).filter((l) => US_CCS.includes(l.CC_Code));
+    const res = await h.stage(lines);
+    await h.enterTb(res.batchId, { '2026-09|US': total(lines.map((l) => l.Actual)) });
+    expect((await h.publish(res.batchId)).published).toBe(true);
+    const audit = await asSuper<{ action: string; entity_id: string; user_email: string; batch_id: string }>(
+      db, `select action, entity_id, user_email, batch_id from ccp.audit_log where entity = 'periods' and batch_id = $1`, [res.batchId],
+    );
+    expect(audit).toEqual([{ action: 'UPDATE', entity_id: '2026-09', user_email: DEEPA, batch_id: res.batchId }]);
+  });
+
+  it('the default "as of" month is the latest month every visible entity has closed', async () => {
+    const cur = (await asSuper<{ m: string }>(db, `select to_char(now(), 'YYYY-MM') as m`))[0].m;
+    const US_CCS = ['US-ENG-201', 'US-SSV-401', 'US-SAL-601'];
+    // Only the US entity publishes the current month
+    const lines = fullPeriod(cur, (i) => `${100 + i}`).filter((l) => US_CCS.includes(l.CC_Code));
+    const res = await h.stage(lines);
+    expect(res.status).toBe('Validated');
+    await h.enterTb(res.batchId, { [`${cur}|US`]: total(lines.map((l) => l.Actual)) });
+    expect((await h.publish(res.batchId)).published).toBe(true);
+    await withUserOn(db, RAJESH, async (tx) => {
+      expect(await availablePeriods(tx)).toContain(cur); // still selectable
+      expect(await latestPeriod(tx)).toBe('2026-09'); // India has not closed it yet
+    });
+    await withUserOn(db, MEENA, async (tx) => expect(await latestPeriod(tx)).toBe('2026-09'));
+    await withUserOn(db, `michael.brown@solidpro-es.com`, async (tx) => expect(await latestPeriod(tx)).toBe(cur));
+  });
+
   it('entities close independently: a US-only file replaces US September and leaves India untouched', async () => {
     const US_CCS = ['US-ENG-201', 'US-SSV-401', 'US-SAL-601'];
     const inBefore = await h.rows(`period = '2026-09' and cc_code like 'IN-%'`);

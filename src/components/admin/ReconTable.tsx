@@ -1,5 +1,6 @@
 'use client';
-import { fmtAmount, tbKey, type PeriodSummary, type ReconLine } from './types';
+import { tbKey, type PeriodSummary, type ReconLine } from './types';
+import { formatMoney } from '@/lib/currency';
 
 /**
  * Totals per period and entity; where there are actuals, the entity's trial-balance
@@ -45,8 +46,8 @@ export function ReconTable({
                 <td className="px-3 whitespace-nowrap">{p.entity}{p.currency ? <span className="text-xs text-muted"> · {p.currency}</span> : null}</td>
                 <td className="px-3 text-right">{p.rows}</td>
                 <td className="px-3 text-right">{p.costCentres}</td>
-                <td className="px-3 text-right">{fmtAmount(p.budgetTotal)}</td>
-                <td className="px-3 text-right">{budgetOnly ? 'Budget only' : fmtAmount(p.actualTotal)}</td>
+                <td className="px-3 text-right">{formatMoney(p.budgetTotal, p.currency)}</td>
+                <td className="px-3 text-right">{budgetOnly ? 'Budget only' : formatMoney(p.actualTotal, p.currency)}</td>
                 <td className="px-3 text-right">
                   {budgetOnly ? (
                     '—'
@@ -60,11 +61,11 @@ export function ReconTable({
                       className="surface w-36 rounded px-2 py-1 text-right"
                     />
                   ) : (
-                    fmtAmount(r?.tbTotal)
+                    formatMoney(r?.tbTotal, p.currency)
                   )}
                 </td>
                 <td className={`px-3 text-right ${r && !r.matched ? 'font-semibold text-accent' : ''}`}>
-                  {budgetOnly ? '—' : fmtAmount(r?.difference)}
+                  {budgetOnly ? '—' : formatMoney(r?.difference, p.currency)}
                 </td>
                 <td className="px-3">
                   {budgetOnly ? (

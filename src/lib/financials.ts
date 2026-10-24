@@ -49,8 +49,20 @@ export interface TrendPoint {
 }
 
 /** Latest period with actuals the caller can see (null if none). */
+/**
+ * Default "as of" period: the latest month that EVERY entity the caller can see has
+ * closed (published actuals). Entities close on different days; defaulting to a month
+ * only one entity has published would show the others' budget against no actuals and
+ * flag false under-spends. Later months can still be chosen explicitly.
+ */
 export async function latestPeriod(tx: Tx): Promise<string | null> {
-  const [r] = await tx.query<{ p: string | null }>('select max(period) as p from ccp.financials where actual is not null');
+  const [r] = await tx.query<{ p: string | null }>(
+    `select min(latest) as p from (
+       select c.entity, max(f.period) as latest
+         from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+        where f.actual is not null
+        group by c.entity) e`,
+  );
   return r?.p ?? null;
 }
 

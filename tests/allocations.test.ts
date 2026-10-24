@@ -268,6 +268,19 @@ describe('allocations upload workflow', () => {
     line({ CC_Code: 'IN-SSV-301', Amount: '20000', Basis: 'Headcount (6 of 120)' }),
   ];
 
+  it('stale-batch guard: an older run cannot overwrite a run published after it was prepared', async () => {
+    const older = await stage(SEPT_IT);
+    const newer = await stage(SEPT_IT.map((l) => ({ ...l, Amount: '1000' })));
+    expect((await publish(newer.batchId)).published).toBe(true);
+    const after = await run('2026-09', 'IN-SSV-302');
+    const out = await publish(older.batchId);
+    expect(out.published).toBe(false);
+    expect((out as { error?: string }).error).toMatch(/allocation run IN-SSV-302 2026-09 was published after this file was prepared/);
+    expect(await run('2026-09', 'IN-SSV-302')).toEqual(after);
+    // The stale batch stays open (not rejected) so it can be discarded
+    expect((await batch(older.batchId)).status).toBe('Validated');
+  });
+
   it('KAVYA stages a run: Validated with a run summary; nothing is written yet', async () => {
     const before = await allRows();
     const res = await stage(SEPT_IT);

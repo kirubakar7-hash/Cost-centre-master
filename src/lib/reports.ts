@@ -14,7 +14,7 @@
 import type { Tx } from './db/core';
 import { isAllowedEmail, reconTolerance } from './config';
 import { currencyOf } from './currency';
-import { availablePeriods } from './financials';
+import { availablePeriods, latestPeriod } from './financials';
 import { fiscalYear, isPeriod, variance } from './fiscal';
 
 // ---------------------------------------------------------------------------
@@ -886,7 +886,8 @@ export async function commentaryCoverage(tx: Tx, filters: CoverageFilters): Prom
   const bus = busRows.map((b) => b.bu);
   const f: CoverageFilters = {
     ...filters,
-    period: filters.period && periods.includes(filters.period) ? filters.period : (periods[0] ?? null),
+    // Default: the latest month every entity has closed (not one only some entities have published)
+    period: filters.period && periods.includes(filters.period) ? filters.period : ((await latestPeriod(tx)) ?? periods[0] ?? null),
     bu: filters.bu && bus.includes(filters.bu) ? filters.bu : null,
   };
   const empty: CoverageKpi = { flagged: 0, explained: 0, unexplained: 0, pct: null };
