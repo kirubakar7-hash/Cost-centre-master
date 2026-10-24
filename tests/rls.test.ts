@@ -19,6 +19,7 @@ const PROTECTED = [
   'ccp.failed_searches',
   'ccp.trial_balances',
   'ccp.periods',
+  'ccp.financials_history',
 ] as const;
 
 const ENGINEERING_ACTIVE = ['IN-ENG-101', 'IN-ENG-102', 'IN-ENG-103', 'US-ENG-201'];
@@ -59,11 +60,17 @@ describe('RLS: read access', () => {
        values ('master', 'm.csv', 'abc', $1, 'Validated', 0, 0, '{}'::jsonb)`,
       [KAVYA],
     );
-    // The seed has no trial-balance rows (ccp.periods is seeded); add one so the table is non-empty.
+    // The seed has no trial-balance or line-history rows (ccp.periods is seeded); add one of each.
     await asSuper(
       db,
-      `insert into ccp.trial_balances (batch_id, period, tb_total, entered_by)
-       select id, '2026-09', 1, uploaded_by from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
+      `insert into ccp.trial_balances (batch_id, period, entity, tb_total, entered_by)
+       select id, '2026-09', 'IN', 1, uploaded_by from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
+    );
+    await asSuper(
+      db,
+      `insert into ccp.financials_history (batch_id, cc_code, period, gl_group, old_budget, old_actual, new_budget, new_actual, change, changed_by)
+       select id, 'IN-SAL-501', '2026-09', 'Travel & Conveyance', 1, 1, 2, 2, 'changed', 'seed@system'
+         from ccp.upload_batches where kind = 'financials' and file_name = 'seed-data'`,
     );
     for (const t of PROTECTED) {
       expect(await count(asSuper(db, `select * from ${t}`)), `${t} should have seed rows`).toBeGreaterThan(0);

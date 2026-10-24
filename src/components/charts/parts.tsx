@@ -60,4 +60,5 @@ export function TooltipCard({ title, rows, theme }: { title: string; rows: Toolt
   );
 }
 
-export const amountOrDash = (v: number | null | undefined) => (v === null || v === undefined ? '—' : fmtAmount(v));
+export const amountOrDash = (v: number | null | undefined, currency?: string) =>
+  v === null || v === undefined ? '—' : fmtAmount(v, currency);

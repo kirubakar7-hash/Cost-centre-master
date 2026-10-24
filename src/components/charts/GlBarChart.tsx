@@ -22,7 +22,7 @@ const truncate = (s: string) => (s.length > MAX_LABEL ? `${s.slice(0, MAX_LABEL 
  * Flagged groups (|variance| > 10%) carry a red ▲/▼ beside their name.
  * The GL table next to it is the accessible data source.
  */
-export function GlBarChart({ data, ariaLabel }: { data: GlBarDatum[]; ariaLabel: string }) {
+export function GlBarChart({ data, ariaLabel, currency }: { data: GlBarDatum[]; ariaLabel: string; currency?: string }) {
   const theme = useChartTheme();
   const byName = new Map(data.map((d) => [d.name, d]));
   const height = Math.max(160, data.length * 46 + 36);
@@ -45,13 +45,13 @@ export function GlBarChart({ data, ariaLabel }: { data: GlBarDatum[]; ariaLabel:
     return (
       <TooltipCard
         theme={theme}
-        title={`${d.name} — YTD`}
+        title={`${d.name} — YTD${currency ? ` (${currency})` : ''}`}
         rows={[
-          { label: 'Actual', value: amountOrDash(d.actual), color: theme.actual },
-          { label: 'Budget', value: amountOrDash(d.budget), color: theme.budget },
+          { label: 'Actual', value: amountOrDash(d.actual, currency), color: theme.actual },
+          { label: 'Budget', value: amountOrDash(d.budget, currency), color: theme.budget },
           {
             label: 'Variance',
-            value: `${fmtSigned(d.variance)} (${fmtPct(d.variancePct)})`,
+            value: `${fmtSigned(d.variance, currency)} (${fmtPct(d.variancePct)})`,
             emphasis: d.flagged ? 'flag' : undefined,
           },
         ]}
@@ -80,7 +80,7 @@ export function GlBarChart({ data, ariaLabel }: { data: GlBarDatum[]; ariaLabel:
             <CartesianGrid horizontal={false} stroke={theme.grid} strokeWidth={1} />
             <XAxis
               type="number"
-              tickFormatter={(v: number) => fmtCompact(v)}
+              tickFormatter={(v: number) => fmtCompact(v, currency)}
               tick={{ fill: theme.axis, fontSize: 11 }}
               axisLine={{ stroke: theme.grid }}
               tickLine={false}

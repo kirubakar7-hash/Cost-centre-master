@@ -24,7 +24,7 @@ export interface TrendDatum {
  * Actual = blue columns (only up to the As-of month); Budget = grey line across
  * all 12 months, so the remaining-year budget is visible. One shared y-axis.
  */
-export function TrendChart({ data, ariaLabel }: { data: TrendDatum[]; ariaLabel: string }) {
+export function TrendChart({ data, ariaLabel, currency }: { data: TrendDatum[]; ariaLabel: string; currency?: string }) {
   const theme = useChartTheme();
   const height = 280;
 
@@ -32,17 +32,17 @@ export function TrendChart({ data, ariaLabel }: { data: TrendDatum[]; ariaLabel:
     const d = payload?.[0]?.payload as TrendDatum | undefined;
     if (!active || !d) return null;
     const rows: TooltipRow[] = [
-      { label: 'Actual', value: d.actual === null ? 'Not yet reported' : amountOrDash(d.actual), color: theme.actual },
-      { label: 'Budget', value: amountOrDash(d.budget), color: theme.budget },
+      { label: 'Actual', value: d.actual === null ? 'Not yet reported' : amountOrDash(d.actual, currency), color: theme.actual },
+      { label: 'Budget', value: amountOrDash(d.budget, currency), color: theme.budget },
     ];
     if (d.variance !== null) {
       rows.push({
         label: 'Variance',
-        value: `${fmtSigned(d.variance)} (${fmtPct(d.variancePct)})`,
+        value: `${fmtSigned(d.variance, currency)} (${fmtPct(d.variancePct)})`,
         emphasis: d.flagged ? 'flag' : undefined,
       });
     }
-    return <TooltipCard theme={theme} title={d.title} rows={rows} />;
+    return <TooltipCard theme={theme} title={currency ? `${d.title} (${currency})` : d.title} rows={rows} />;
   };
 
   return (
@@ -64,7 +64,7 @@ export function TrendChart({ data, ariaLabel }: { data: TrendDatum[]; ariaLabel:
               minTickGap={6}
             />
             <YAxis
-              tickFormatter={(v: number) => fmtCompact(v)}
+              tickFormatter={(v: number) => fmtCompact(v, currency)}
               tick={{ fill: theme.axis, fontSize: 11 }}
               axisLine={false}
               tickLine={false}

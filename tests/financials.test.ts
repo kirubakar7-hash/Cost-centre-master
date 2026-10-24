@@ -207,6 +207,26 @@ describe('validateFinancials', () => {
     expect(codesOf(line({ Actual: '99999999999999999' }))).toEqual(['INVALID_AMOUNT']);
   });
 
+  it('PERIOD_TOTAL_TOO_LARGE is checked per legal entity (each entity reconciles to its own TB)', () => {
+    const ctx: FinancialsContext = {
+      ...CTX,
+      costCentres: [
+        { cc_code: 'IN-ENG-101', status: 'Active', start_date: '2019-04-01', close_date: null, entity: 'IN' },
+        { cc_code: 'IN-ENG-102', status: 'Active', start_date: '2020-04-01', close_date: null, entity: 'IN' },
+        { cc_code: 'US-ENG-201', status: 'Active', start_date: '2022-01-01', close_date: null, entity: 'US' },
+      ],
+    };
+    const v = (...rows: Values[]) => validateFinancials(file(FIN_HEADERS, rows), ctx);
+    // 6 + 6 lakh crore split across two entities: each entity's total is under the limit
+    expect(v(line({ Actual: '6000000000000' }), line({ CC_Code: 'US-ENG-201', Actual: '6000000000000' })).errors).toEqual([]);
+    // ...but within one entity it is not, and the message names the entity
+    const r = v(line({ Actual: '6000000000000' }), line({ CC_Code: 'IN-ENG-102', Actual: '6000000000000' }), line({ CC_Code: 'US-ENG-201', Actual: '1' }));
+    expect(pick(r.errors)).toEqual([{ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE' }]);
+    expect(r.errors[0].message).toMatch(/2026-10 \(IN\)/);
+    // Budgets count too
+    expect(codesOf(line({ Budget: '6000000000000' }), line({ GL_Group: 'Travel & Conveyance', Budget: '6000000000000' }))).toEqual(['PERIOD_TOTAL_TOO_LARGE']);
+  });
+
   it('INCOMPLETE_PERIOD: a file must cover every cost centre that already has figures in that month', () => {
     const ctx = { ...CTX, existingCcsByPeriod: { '2026-10': ['IN-ENG-101', 'IN-ENG-102'] } };
     const partial = validateFinancials(file(FIN_HEADERS, [line()]), ctx);
@@ -324,10 +344,31 @@ describe('summarizePeriods', () => {
       rec('IN-ENG-101', '2026-11', 'Employee Costs', 100, null),
       rec('IN-ENG-101', '2026-09', 'Employee Costs', 10, 0),
     ]);
+    // Without an entity map everything is one combined 'ALL' bucket per period
+    const all = { entity: 'ALL', currency: '' };
     expect(s).toEqual([
-      { period: '2026-09', rows: 1, costCentres: 1, budgetTotal: 10, actualTotal: 0 }, // all-zero actuals are still actuals
-      { period: '2026-10', rows: 3, costCentres: 2, budgetTotal: 150.3, actualTotal: 90.15 },
-      { period: '2026-11', rows: 2, costCentres: 2, budgetTotal: 200, actualTotal: null },
+      { period: '2026-09', ...all, rows: 1, costCentres: 1, budgetTotal: 10, actualTotal: 0 }, // all-zero actuals are still actuals
+      { period: '2026-10', ...all, rows: 3, costCentres: 2, budgetTotal: 150.3, actualTotal: 90.15 },
+      { period: '2026-11', ...all, rows: 2, costCentres: 2, budgetTotal: 200, actualTotal: null },
+    ]);
+  });
+  it('with an entity map: one summary per period and legal entity, in that entity\'s currency', () => {
+    const entityOf = (cc: string) => cc.slice(0, 2);
+    const s = summarizePeriods([
+      rec('US-ENG-201', '2026-09', 'Employee Costs', 600, 610.5),
+      rec('IN-ENG-101', '2026-09', 'Employee Costs', 1000, 990.25),
+      rec('IN-ENG-102', '2026-09', 'Employee Costs', 500, 0),
+      rec('US-SAL-601', '2026-09', 'Travel & Conveyance', 40, 39.5),
+      rec('UK-ENG-301', '2026-09', 'Employee Costs', 70, 71),
+      rec('US-ENG-201', '2026-10', 'Employee Costs', 600, null), // budget-only month for US
+      rec('IN-ENG-101', '2026-08', 'Employee Costs', 1000, 1001),
+    ], entityOf);
+    expect(s).toEqual([
+      { period: '2026-08', entity: 'IN', currency: 'INR', rows: 1, costCentres: 1, budgetTotal: 1000, actualTotal: 1001 },
+      { period: '2026-09', entity: 'IN', currency: 'INR', rows: 2, costCentres: 2, budgetTotal: 1500, actualTotal: 990.25 },
+      { period: '2026-09', entity: 'UK', currency: 'GBP', rows: 1, costCentres: 1, budgetTotal: 70, actualTotal: 71 },
+      { period: '2026-09', entity: 'US', currency: 'USD', rows: 2, costCentres: 2, budgetTotal: 640, actualTotal: 650 },
+      { period: '2026-10', entity: 'US', currency: 'USD', rows: 1, costCentres: 1, budgetTotal: 600, actualTotal: null },
     ]);
   });
   it('empty input -> no periods', () => {
@@ -337,7 +378,7 @@ describe('summarizePeriods', () => {
     // Summing 1234567.89 sixty thousand times in floating point gives 74074073399.97.
     const recs = Array.from({ length: 60000 }, (_, i) => rec(`CC-${i % 100}`, '2026-09', `GL ${i}`, 1234567.89, 1234567.89));
     expect(summarizePeriods(recs)).toEqual([
-      { period: '2026-09', rows: 60000, costCentres: 100, budgetTotal: 74074073400, actualTotal: 74074073400 },
+      { period: '2026-09', entity: 'ALL', currency: '', rows: 60000, costCentres: 100, budgetTotal: 74074073400, actualTotal: 74074073400 },
     ]);
   });
 });

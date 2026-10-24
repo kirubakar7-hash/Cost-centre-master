@@ -12,11 +12,11 @@ export function FlagMarker({ amount }: { amount: number }) {
 }
 
 /** Variance amount, red with a marker when flagged. */
-export function VarianceAmount({ amount, flagged }: { amount: number; flagged: boolean }) {
+export function VarianceAmount({ amount, flagged, currency }: { amount: number; flagged: boolean; currency?: string }) {
   return (
     <span className={flagged ? `${FLAG_TEXT} font-semibold` : ''}>
       {flagged && <FlagMarker amount={amount} />}
-      {fmtSigned(amount)}
+      {fmtSigned(amount, currency)}
     </span>
   );
 }
