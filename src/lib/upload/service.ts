@@ -81,10 +81,17 @@ async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
   const covered = await tx.query<{ period: string; ccs: string[] }>(
     'select period, array_agg(distinct cc_code) as ccs from ccp.financials group by period',
   );
+  const keys = await tx.query<{ k: string }>(
+    `select period || '|' || entity as k from ccp.periods
+     union
+     select distinct f.period || '|' || c.entity from ccp.financials f
+       join ccp.cost_centres c on c.cc_code = f.cc_code where f.actual is not null`,
+  );
   return {
     costCentres,
     knownGlGroups: gl.map((g) => g.gl_group),
     publishedPeriods: periods.map((p) => p.period),
+    publishedKeys: keys.map((k) => k.k),
     currentPeriod: now,
     existingCcsByPeriod: Object.fromEntries(covered.map((c) => [c.period, c.ccs])),
   };
@@ -273,21 +280,26 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
   if (errors.length) return { published: false as const, errors };
   const periods = summarizePeriods(records, entityMap(ctx));
 
-  // Stale-batch guard: never let an older upload overwrite a period that was
-  // published after this file was prepared.
-  const newer = await tx.query<{ period: string }>(
-    `select distinct e->>'period' as period
+  // The file replaces each (period, entity) it contains — other entities' figures for
+  // the same period are untouched, so each entity can close its month independently.
+  const scopeKeys = [...new Set(periods.map((p) => `${p.period}|${p.entity}`))];
+
+  // Stale-batch guard: never let an older upload overwrite a period/entity that was
+  // published after this file was prepared (older batches without an entity match by period).
+  const newer = await tx.query<{ scope: string }>(
+    `select distinct e->>'period' || coalesce(' ' || nullif(e->>'entity', 'ALL'), '') as scope
        from ccp.upload_batches b, jsonb_array_elements(coalesce(b.summary->'periods', '[]'::jsonb)) e
       where b.kind = 'financials' and b.status = 'Published' and b.id <> $1
         and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
-        and e->>'period' = any ($2)`,
-    [batchId, [...new Set(periods.map((p) => p.period))]],
+        and ((e ? 'entity' and e->>'entity' <> 'ALL' and (e->>'period') || '|' || (e->>'entity') = any ($2))
+             or ((not e ? 'entity' or e->>'entity' = 'ALL') and e->>'period' = any ($3)))`,
+    [batchId, scopeKeys, [...new Set(periods.map((p) => p.period))]],
   );
   if (newer.length) {
     return {
       published: false as const,
       errors: [] as Issue[],
-      error: `Publishing blocked: ${newer.map((n) => n.period).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
+      error: `Publishing blocked: ${newer.map((n) => n.scope).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
     };
   }
 
@@ -305,16 +317,17 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
     };
   }
 
-  const periodList = [...new Set(periods.map((p) => p.period))];
   const before = await tx.query<{ period: string; entity: string; budget: string; actual: string | null }>(
     `select f.period, c.entity, sum(f.budget)::text as budget, sum(f.actual)::text as actual
        from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
-      where f.period = any ($1) group by f.period, c.entity order by 1, 2`, [periodList],
+      where f.period || '|' || c.entity = any ($1) group by f.period, c.entity order by 1, 2`, [scopeKeys],
   );
   const recordsJson = JSON.stringify(records satisfies FinancialRecord[]);
   // Line-level history: every line this publish adds, changes or removes
   const [{ n: changedLines }] = await tx.query<{ n: number }>(
-    `with o as (select cc_code, period, gl_group, budget, actual from ccp.financials where period = any ($2)),
+    `with o as (select f.cc_code, f.period, f.gl_group, f.budget, f.actual
+                  from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+                 where f.period || '|' || c.entity = any ($2)),
           n as (select * from jsonb_to_recordset($3::jsonb) as r(cc_code text, period text, gl_group text, budget numeric, actual numeric)),
           ins as (
             insert into ccp.financials_history
@@ -329,9 +342,13 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
                 or o.budget is distinct from n.budget or o.actual is distinct from n.actual
             returning 1)
      select count(*)::int as n from ins`,
-    [batchId, periodList, recordsJson],
+    [batchId, scopeKeys, recordsJson],
   );
-  await tx.query('delete from ccp.financials where period = any ($1)', [periodList]);
+  await tx.query(
+    `delete from ccp.financials f using ccp.cost_centres c
+      where c.cc_code = f.cc_code and f.period || '|' || c.entity = any ($1)`,
+    [scopeKeys],
+  );
   await tx.query(
     `insert into ccp.financials (cc_code, period, gl_group, budget, actual)
      select cc_code, period, gl_group, budget, actual
@@ -355,10 +372,26 @@ async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
   };
 }
 
-async function publishAllocations(tx: Tx, batch: BatchRow) {
+async function publishAllocations(tx: Tx, batchId: string, batch: BatchRow) {
   const { records, errors } = validateAllocations(batch.payload, await loadAllocationsContext(tx));
   if (errors.length) return { published: false as const, errors };
   const runs = summarizeAllocations(records);
+  // Stale-batch guard: an older file must not overwrite a run published after it was prepared
+  const newer = await tx.query<{ run: string }>(
+    `select distinct (e->>'source_cc') || ' ' || (e->>'period') as run
+       from ccp.upload_batches b, jsonb_array_elements(coalesce(b.summary->'runs', '[]'::jsonb)) e
+      where b.kind = 'allocations' and b.status = 'Published' and b.id <> $1
+        and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
+        and (e->>'period') || '|' || (e->>'source_cc') = any ($2)`,
+    [batchId, runs.map((r) => `${r.period}|${r.source_cc}`)],
+  );
+  if (newer.length) {
+    return {
+      published: false as const,
+      errors: [] as Issue[],
+      error: `Publishing blocked: the allocation run ${newer.map((n) => n.run).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
+    };
+  }
   const recordsJson = JSON.stringify(records satisfies AllocationRecord[]);
   // Replace each allocation run (period × source) the file contains; row triggers audit every change
   const [{ n: removed }] = await tx.query<{ n: number }>(
@@ -391,9 +424,9 @@ export async function publishUpload(tx: Tx, batchId: string) {
     throw new UploadError('Segregation of duties: a different Finance user must approve and publish this upload.');
 
   if (batch.kind === 'allocations') {
-    const result = await publishAllocations(tx, batch);
+    const result = await publishAllocations(tx, batchId, batch);
     if (result.published) await markPublished(tx, batchId, result.summary);
-    else await markRejected(tx, batchId, result.errors);
+    else if (result.errors.length) await markRejected(tx, batchId, result.errors);
     return result;
   }
 

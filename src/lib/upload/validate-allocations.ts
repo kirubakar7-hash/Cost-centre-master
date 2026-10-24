@@ -74,6 +74,12 @@ export function validateAllocations(file: ParsedFile, ctx: AllocationsContext): 
       if (closeMonth && period > closeMonth)
         err('CC_Code', 'CC_CLOSED', `${target} was closed on ${t.close_date}; it cannot receive allocations for ${period}.`);
     }
+    // A closed cost centre has no costs after its close month, so it cannot recharge any either
+    if (s && period) {
+      const closeMonth = s.close_date?.slice(0, 7);
+      if (closeMonth && period > closeMonth)
+        err('Source_CC', 'CC_CLOSED', `${source} was closed on ${s.close_date}; it cannot allocate costs for ${period}.`);
+    }
     if (s && s.type === 'Direct' && !warnedDirect.has(source)) {
       warnedDirect.add(source);
       warnings.push({ row, column: 'Source_CC', code: 'DIRECT_SOURCE', message: `${source} is a Direct cost centre — allocations normally come from Shared or Allocated ones.` });

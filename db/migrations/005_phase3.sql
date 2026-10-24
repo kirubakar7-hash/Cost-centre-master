@@ -83,5 +83,19 @@ alter table ccp.allocations add constraint allocations_basis_len check (length(t
 create trigger allocations_audit after insert or update or delete on ccp.allocations
   for each row execute function ccp.tg_audit('cc_code');
 
+-- ---------------------------------------------------------------------
+-- 4. The period register is tamper-evident: every change is audited.
+-- ---------------------------------------------------------------------
+create trigger periods_audit after insert or update or delete on ccp.periods
+  for each row execute function ccp.tg_audit('period');
+
+-- Name the table in the append-only error (shared by audit_log and financials_history)
+create or replace function ccp.tg_audit_immutable() returns trigger
+language plpgsql
+as $$
+begin
+  raise exception '% is append-only', tg_table_name;
+end $$;
+
 revoke execute on all functions in schema ccp from public;
 grant execute on all functions in schema ccp to cc_app;

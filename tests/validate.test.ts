@@ -106,7 +106,7 @@ describe('parseUpload', () => {
     ]);
   });
   it('reads the generated .xlsx templates: header row only, no example data rows', async () => {
-    for (const kind of ['master', 'owners', 'financials'] as const) {
+    for (const kind of ['master', 'owners', 'financials', 'allocations'] as const) {
       const parsed = await parseUpload('t.xlsx', await buildTemplate(kind), TEMPLATES[kind].sheet);
       expect(parsed.headers, kind).toEqual(TEMPLATES[kind].columns.map((c) => c.key));
       expect(parsed.rows, kind).toEqual([]);
@@ -484,7 +484,7 @@ describe('upload workflow (stage -> publish)', () => {
 
   it('an unchanged template is rejected as an empty file and changes nothing', async () => {
     const before = await asSuper(db, 'select count(*)::int as n from ccp.cost_centres');
-    for (const kind of ['master', 'owners', 'financials'] as const) {
+    for (const kind of ['master', 'owners', 'financials', 'allocations'] as const) {
       const data = await buildTemplate(kind);
       const res = await withUserOn(db, KAVYA, (tx) => stageUpload(tx, KAVYA, kind, TEMPLATES[kind].fileName, data));
       expect(res.status, kind).toBe('Rejected');

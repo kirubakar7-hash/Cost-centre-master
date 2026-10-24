@@ -82,7 +82,7 @@ function rand(seed: string) {
   return ((h >>> 0) % 10000) / 10000;
 }
 
-// Monthly budget by GL group (INR-equivalent units) per cost-centre type.
+// Monthly budget by GL group in INR per cost-centre type (US cost centres are scaled to USD below).
 const BASE: Record<string, number[]> = {
   Direct: [1_800_000, 120_000, 260_000, 150_000, 80_000, 45_000],
   Shared: [900_000, 40_000, 180_000, 220_000, 120_000, 70_000],
@@ -102,7 +102,8 @@ const HOTSPOTS: Record<string, Record<string, number>> = {
 export function buildFinancials() {
   const rows: { cc: string; period: string; gl: string; budget: number; actual: number | null }[] = [];
   for (const cc of SEED_COST_CENTRES.filter((c) => c.status !== 'Inactive')) {
-    const scale = cc.entity === 'US' ? 0.6 : 1;
+    // Amounts are in each entity's own currency: INR for IN, USD for the US entity
+    const scale = cc.entity === 'US' ? 0.03 : 1;
     GL_GROUPS.forEach((gl, i) => {
       for (const period of SEED_PERIODS) {
         const budget = Math.round(BASE[cc.type][i] * scale * (0.95 + rand(cc.code + gl) * 0.1));
@@ -183,8 +184,8 @@ export async function seedData(tx: Tx) {
     ['IN-ENG-102', 'IN-SSV-302', 62_000, 'Headcount (18 of 118)'],
     ['IN-ENG-103', 'IN-SSV-302', 55_000, 'Headcount (16 of 118)'],
     ['IN-SAL-501', 'IN-SSV-302', 31_000, 'Headcount (9 of 118)'],
-    ['US-ENG-201', 'US-SSV-401', 210_000, 'Floor area (60%)'],
-    ['US-SAL-601', 'US-SSV-401', 140_000, 'Floor area (40%)'],
+    ['US-ENG-201', 'US-SSV-401', 6_300, 'Floor area (60%)'],
+    ['US-SAL-601', 'US-SSV-401', 4_200, 'Floor area (40%)'],
   ];
   const existing = await tx.query<{ n: number }>('select count(*)::int as n from ccp.allocations');
   if (existing[0].n === 0) {

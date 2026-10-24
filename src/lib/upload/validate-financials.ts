@@ -25,6 +25,8 @@ export interface FinancialsContext {
   knownGlGroups: string[];
   /** Periods that already have published actuals */
   publishedPeriods: string[];
+  /** "YYYY-MM|ENTITY" pairs with published actuals ("|ALL" = legacy combined row); finer than publishedPeriods */
+  publishedKeys?: string[];
   /** Current calendar month (YYYY-MM); actuals cannot be posted after it */
   currentPeriod: string;
   /**
@@ -212,48 +214,61 @@ export function validateFinancials(file: ParsedFile, ctx: FinancialsContext): Va
     });
   }
 
-  // Period-level completeness rules
-  const periods = new Map<string, { withActual: number; blankRows: number[] }>();
+  // Completeness rules apply per period AND legal entity: each entity closes its own books,
+  // so a file replaces only the entities it contains for each period (a late US file does
+  // not need to repeat India's lines).
+  const entityOf: EntityOf = (cc) => ccs.get(cc)?.entity ?? 'ALL';
+  const scopeLabel = (period: string, entity: string) => (entity === 'ALL' ? period : `${period} (${entity})`);
+  const scopes = new Map<string, { period: string; entity: string; withActual: number; blankRows: number[] }>();
   for (const r of records) {
     if (!r.period) continue;
-    const p = periods.get(r.period) ?? { withActual: 0, blankRows: [] };
+    const entity = entityOf(r.cc_code);
+    const key = `${r.period}|${entity}`;
+    const p = scopes.get(key) ?? { period: r.period, entity, withActual: 0, blankRows: [] };
     if (r.actual === null) p.blankRows.push(r.row);
     else p.withActual++;
-    periods.set(r.period, p);
+    scopes.set(key, p);
   }
-  const published = new Set(ctx.publishedPeriods);
-  for (const [period, p] of periods) {
+  const publishedKeys = ctx.publishedKeys ? new Set(ctx.publishedKeys) : null;
+  const publishedPeriods = new Set(ctx.publishedPeriods);
+  const isPublished = (period: string, entity: string) =>
+    publishedKeys
+      ? publishedKeys.has(`${period}|${entity}`) || publishedKeys.has(`${period}|ALL`) || (entity === 'ALL' && publishedPeriods.has(period))
+      : publishedPeriods.has(period);
+  for (const p of scopes.values()) {
+    const label = scopeLabel(p.period, p.entity);
     if (p.withActual > 0 && p.blankRows.length > 0) {
       for (const row of p.blankRows.slice(0, 20))
-        errors.push({ row, column: 'Actual', code: 'MISSING_ACTUAL', message: `Period ${period} has actuals on other rows — enter 0 instead of leaving Actual blank.` });
+        errors.push({ row, column: 'Actual', code: 'MISSING_ACTUAL', message: `${label} has actuals on other rows — enter 0 instead of leaving Actual blank.` });
     }
-    if (p.withActual === 0 && published.has(period))
-      errors.push({ row: null, column: 'Actual', code: 'WOULD_REMOVE_ACTUALS', message: `Period ${period} already has published actuals; this budget-only file would remove them. Include the actuals for ${period}.` });
+    if (p.withActual === 0 && isPublished(p.period, p.entity))
+      errors.push({ row: null, column: 'Actual', code: 'WOULD_REMOVE_ACTUALS', message: `${label} already has published actuals; this budget-only file would remove them. Include the actuals for ${label}.` });
   }
 
   // Period totals (per entity) must fit the same limit as a trial-balance total, or the
   // batch could never be reconciled and published.
-  const entityOf: EntityOf = (cc) => ccs.get(cc)?.entity ?? 'ALL';
   const withPeriod = records.filter((r) => r.period);
-  for (const t of periodTotals(withPeriod, entityOf).values()) {
+  const totals = periodTotals(withPeriod, entityOf);
+  for (const t of totals.values()) {
     if (absBig(t.budget) >= MAX_CENTS || absBig(t.actual) >= MAX_CENTS) {
-      const scope = t.entity === 'ALL' ? t.period : `${t.period} (${t.entity})`;
-      errors.push({ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE', message: `The total for ${scope} is too large to reconcile. Check for a pasted account number or a missing decimal point.` });
+      errors.push({ row: null, column: null, code: 'PERIOD_TOTAL_TOO_LARGE', message: `The total for ${scopeLabel(t.period, t.entity)} is too large to reconcile. Check for a pasted account number or a missing decimal point.` });
     }
   }
 
-  // Each upload replaces whole periods: refuse a file that would silently delete other
-  // cost centres' figures for a period it touches.
-  for (const t of periodTotals(withPeriod).values()) {
-    const period = t.period;
-    const missing = (ctx.existingCcsByPeriod?.[period] ?? []).filter((cc) => !t.ccs.has(cc)).sort();
+  // Each upload replaces the period for every entity it contains: refuse a file that would
+  // silently delete figures of that entity's other cost centres.
+  for (const t of totals.values()) {
+    const missing = (ctx.existingCcsByPeriod?.[t.period] ?? [])
+      .filter((cc) => (t.entity === 'ALL' || entityOf(cc) === t.entity) && !t.ccs.has(cc))
+      .sort();
     if (missing.length) {
+      const label = scopeLabel(t.period, t.entity);
       const list = missing.slice(0, 10).join(', ') + (missing.length > 10 ? ` and ${missing.length - 10} more` : '');
       errors.push({
         row: null,
         column: 'CC_Code',
         code: 'INCOMPLETE_PERIOD',
-        message: `${period} already has figures for ${missing.length} cost centre(s) not in this file (${list}). An upload replaces the whole month, so include every cost centre for ${period} (use 0 where there is nothing to report).`,
+        message: `${label} already has figures for ${missing.length} cost centre(s) not in this file (${list}). An upload replaces the whole month for each entity it contains, so include every cost centre of that entity for ${t.period} (use 0 where there is nothing to report).`,
       });
     }
   }

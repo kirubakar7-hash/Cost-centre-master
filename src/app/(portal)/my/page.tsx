@@ -256,36 +256,36 @@ export default async function MyCostCentresPage({ searchParams }: { searchParams
               {rows.map((r) => {
                 const cur = currencyOf(r.entity);
                 return (
-                <tr
-                  key={r.cc_code}
-                  className="border-theme relative border-t text-right transition-colors hover:bg-brand/5 dark:hover:bg-brand-light/10"
-                >
-                  <th
-                    scope="row"
-                    className={`py-2 pl-2 pr-3 text-left ${r.flagged ? 'shadow-[inset_3px_0_0_0_var(--color-accent)]' : ''}`}
+                  <tr
+                    key={r.cc_code}
+                    className="border-theme relative border-t text-right transition-colors hover:bg-brand/5 dark:hover:bg-brand-light/10"
                   >
-                    <Link
-                      href={`/my/${encodeURIComponent(r.cc_code)}${q}`}
-                      className="whitespace-nowrap font-mono font-bold text-brand after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:outline-2 dark:text-brand-light"
+                    <th
+                      scope="row"
+                      className={`py-2 pl-2 pr-3 text-left ${r.flagged ? 'shadow-[inset_3px_0_0_0_var(--color-accent)]' : ''}`}
                     >
-                      {r.cc_code}
-                    </Link>
-                  </th>
-                  <td className="pr-3 text-left">
-                    {r.cc_alias}
-                    {r.status !== 'Active' && (
-                      <span className="ml-2 rounded bg-gray-500/15 px-1.5 py-0.5 text-[11px] font-medium text-muted">{r.status}</span>
-                    )}
-                  </td>
-                  <td className="pr-3 text-left">{r.bu}</td>
-                  <td className="pr-3 text-left">{r.owner_name ?? '—'}</td>
-                  <td className="pr-3 text-left text-xs font-medium text-muted">{cur}</td>
-                  <td className="pr-3">{fmtAmount(r.ytdBudget, cur)}</td>
-                  <td className="pr-3">{fmtAmount(r.ytdActual, cur)}</td>
-                  <td className="pr-3"><VarianceAmount amount={r.ytdVariance} flagged={r.flagged} currency={cur} /></td>
-                  <td className="pr-3"><VariancePct pct={r.ytdVariancePct} flagged={r.flagged} /></td>
-                  <td>{fmtAmount(r.outturn, cur)}</td>
-                </tr>
+                      <Link
+                        href={`/my/${encodeURIComponent(r.cc_code)}${q}`}
+                        className="whitespace-nowrap font-mono font-bold text-brand after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:outline-2 dark:text-brand-light"
+                      >
+                        {r.cc_code}
+                      </Link>
+                    </th>
+                    <td className="pr-3 text-left">
+                      {r.cc_alias}
+                      {r.status !== 'Active' && (
+                        <span className="ml-2 rounded bg-gray-500/15 px-1.5 py-0.5 text-[11px] font-medium text-muted">{r.status}</span>
+                      )}
+                    </td>
+                    <td className="pr-3 text-left">{r.bu}</td>
+                    <td className="pr-3 text-left">{r.owner_name ?? '—'}</td>
+                    <td className="pr-3 text-left text-xs font-medium text-muted">{cur}</td>
+                    <td className="pr-3">{fmtAmount(r.ytdBudget, cur)}</td>
+                    <td className="pr-3">{fmtAmount(r.ytdActual, cur)}</td>
+                    <td className="pr-3"><VarianceAmount amount={r.ytdVariance} flagged={r.flagged} currency={cur} /></td>
+                    <td className="pr-3"><VariancePct pct={r.ytdVariancePct} flagged={r.flagged} /></td>
+                    <td>{fmtAmount(r.outturn, cur)}</td>
+                  </tr>
                 );
               })}
             </tbody>

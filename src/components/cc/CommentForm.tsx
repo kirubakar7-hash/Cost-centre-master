@@ -38,6 +38,7 @@ export function CommentForm({
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   const trimmed = text.trim();
+  const selected = options.find((o) => o.gl === gl);
   const over = trimmed.length > MAX;
   const pending = busy || refreshing;
 
@@ -59,6 +60,9 @@ export function CommentForm({
       }
       setText('');
       setMessage({ ok: true, text: `Explanation saved for ${gl}.` });
+      // Move on to the next flagged line that still needs an explanation, if any.
+      const next = options.find((o) => o.flagged && o.comments === 0 && o.gl !== gl);
+      if (next) setGl(next.gl);
       startTransition(() => router.refresh());
     } catch {
       setMessage({ ok: false, text: 'Could not reach the server. Check your connection and try again.' });
@@ -83,10 +87,18 @@ export function CommentForm({
           {options.map((o) => (
             <option key={o.gl} value={o.gl}>
               {o.gl}
-              {o.flagged ? (o.comments === 0 ? ' — over ±10%, explanation needed' : ' — over ±10%') : ''}
+              {o.flagged && o.comments === 0 ? ' (needs explanation)' : ''}
             </option>
           ))}
         </select>
+        {selected && (
+          <p className={`mt-1 text-xs ${selected.flagged && selected.comments === 0 ? 'font-semibold text-accent dark:text-[#ff6b70]' : 'text-muted'}`}>
+            {selected.flagged ? 'Over ±10% of budget' : 'Within ±10% of budget'} ·{' '}
+            {selected.comments === 0
+              ? 'no explanation yet'
+              : `${selected.comments} explanation${selected.comments === 1 ? '' : 's'} so far`}
+          </p>
+        )}
       </div>
       <div>
         <label htmlFor={`${id}-text`} className="block text-xs font-medium text-muted">
