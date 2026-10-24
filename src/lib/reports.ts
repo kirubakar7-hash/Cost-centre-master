@@ -469,6 +469,8 @@ export interface HistoryLine {
   cc_code: string;
   period: string;
   gl_group: string;
+  /** Currency of the cost centre's entity (null if the code is not in the master). */
+  currency: string | null;
   change: string | null;
   old_budget: number | null;
   old_actual: number | null;
@@ -553,8 +555,9 @@ export async function uploadBatchDetail(tx: Tx, id: string, opts: { historyLimit
       'select count(*)::int as n from ccp.financials_history where batch_id = $1::uuid',
       [id],
     );
-    const lines = await tx.query<HistoryLine>(
+    const lines = await tx.query<HistoryLine & { entity: string | null }>(
       `select h.cc_code, h.period, h.gl_group, ${shape.hasChange ? 'h.change' : 'null::text'} as change,
+              (select c.entity from ccp.cost_centres c where c.cc_code = h.cc_code) as entity,
               h.old_budget, h.old_actual, h.new_budget, h.new_actual,
               ${UTC_TS('h.changed_at')} as changed_at, h.changed_by
          from ccp.financials_history h where h.batch_id = $1::uuid
@@ -564,8 +567,9 @@ export async function uploadBatchDetail(tx: Tx, id: string, opts: { historyLimit
     );
     history = {
       total: n,
-      lines: lines.map((l) => ({
+      lines: lines.map(({ entity, ...l }) => ({
         ...l,
+        currency: entity ? currencyOf(entity) : null,
         old_budget: numOrNull(l.old_budget),
         old_actual: numOrNull(l.old_actual),
         new_budget: numOrNull(l.new_budget),
@@ -624,6 +628,15 @@ export const EXCEPTION_LABELS: Record<AccessExceptionKind, string> = {
   backup_is_bu_head: 'Backup owner is also the BU head',
   inactive_cc: 'Inactive cost centre still has access',
   external_email: 'Email outside the allowed company domains',
+};
+
+/** Short form for table cells. */
+export const EXCEPTION_SHORT: Record<AccessExceptionKind, string> = {
+  sod: 'Finance + owner (SoD)',
+  owner_is_bu_head: 'Owner = BU head',
+  backup_is_bu_head: 'Backup = BU head',
+  inactive_cc: 'Inactive cost centre',
+  external_email: 'External email',
 };
 
 export interface AccessException {
@@ -727,7 +740,7 @@ export async function accessReview(tx: Tx, filters: AccessFilters): Promise<Acce
       kind: 'sod',
       user_email: user,
       cc_code: null,
-      detail: `Finance user is ${owned.map((r) => `${ROLE_LABELS[r.role]} of ${r.cc_code}`).join(', ')} — can upload and approve figures for cost centres they are accountable for.`,
+      detail: `${user} has Finance access and is ${owned.map((r) => `${ROLE_LABELS[r.role]} of ${r.cc_code}`).join(', ')} — can upload and approve figures for cost centres they are accountable for.`,
     });
   }
 
@@ -899,6 +912,7 @@ export async function commentaryCoverage(tx: Tx, filters: CoverageFilters): Prom
                 ${UTC_TS('max(m.created_at)')} as latest_at
            from ccp.comments m
           where m.cc_code = y.cc_code and m.period = $1 and m.gl_group = y.gl_group
+            and length(trim(m.comment)) > 0   -- a blank comment explains nothing
        ) k on true
       where ($3::text is null or c.bu = $3::text)
       order by c.bu, y.cc_code, y.gl_group`,
