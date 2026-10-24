@@ -1,0 +1,519 @@
+/**
+ * Stage -> (reconcile) -> approve/publish workflow for all uploads.
+ *
+ * Controls:
+ *  - Any validation error rejects the whole file (nothing saved).
+ *  - Publish re-validates against the CURRENT database in the same transaction.
+ *  - Maker-checker: the publisher must be a different Finance user from the uploader.
+ *  - Financials: every period with actuals must reconcile, entity by entity, to the
+ *    trial-balance total entered by the preparer, or publishing is blocked.
+ *  - Financials: every line a publish adds, changes or removes is kept in
+ *    ccp.financials_history (old and new values, batch id).
+ */
+import crypto from 'node:crypto';
+import type { Tx } from '../db/core';
+import { makerCheckerEnabled, reconTolerance } from '../config';
+import { parseUpload, MAX_ROWS, MAX_FINANCIAL_ROWS, type ParsedFile } from './parse';
+import { summarizeAllocations, validateAllocations, type AllocationRecord, type AllocationRunSummary, type AllocationsContext } from './validate-allocations';
+import { currencyOf } from '../currency';
+import { TEMPLATES } from './templates';
+import { validateMaster, validateOwners, type ExistingState, type Issue, type MasterRecord, type OwnerRecord } from './validate';
+import {
+  MAX_AMOUNT,
+  roundMoney,
+  summarizePeriods,
+  validateFinancials,
+  type FinancialRecord,
+  type FinancialsContext,
+  type PeriodSummary,
+} from './validate-financials';
+
+export type MasterKind = 'master' | 'owners';
+export type BatchKind = MasterKind | 'financials' | 'allocations';
+
+/** Expected, user-correctable problems (shown as 400). Anything else is a 500. */
+export class UploadError extends Error {}
+
+async function loadExisting(tx: Tx): Promise<ExistingState> {
+  const costCentres = await tx.query<{ cc_code: string; cc_alias: string; status: string }>(
+    'select cc_code, cc_alias, status from ccp.cost_centres',
+  );
+  const owned = await tx.query<{ cc_code: string }>('select cc_code from ccp.cc_owners');
+  return { costCentres, ownedCodes: owned.map((o) => o.cc_code) };
+}
+
+function runValidation(kind: MasterKind, file: Parameters<typeof validateMaster>[0], existing: ExistingState) {
+  return kind === 'master' ? validateMaster(file, existing) : validateOwners(file, existing);
+}
+
+async function diffSummary(tx: Tx, kind: MasterKind, records: (MasterRecord | OwnerRecord)[]) {
+  const table = kind === 'master' ? 'ccp.cost_centres' : 'ccp.cc_owners';
+  const cols = Object.keys(records[0] ?? {});
+  const current = await tx.query<Record<string, string | null>>(
+    `select ${cols.map((c) => `${c}::text as ${c}`).join(', ')} from ${table} where cc_code = any($1)`,
+    [records.map((r) => r.cc_code)],
+  );
+  const byCode = new Map(current.map((r) => [r.cc_code, r]));
+  let created = 0, updated = 0, unchanged = 0;
+  for (const r of records) {
+    const cur = byCode.get(r.cc_code);
+    if (!cur) created++;
+    else if (cols.some((c) => (cur[c] ?? null) !== ((r as unknown as Record<string, string | null>)[c] ?? null))) updated++;
+    else unchanged++;
+  }
+  return { created, updated, unchanged };
+}
+
+async function loadFinancialsContext(tx: Tx): Promise<FinancialsContext> {
+  const costCentres = await tx.query<FinancialsContext['costCentres'][number]>(
+    'select cc_code, status, entity, start_date::text as start_date, close_date::text as close_date from ccp.cost_centres',
+  );
+  const gl = await tx.query<{ gl_group: string }>('select distinct gl_group from ccp.financials');
+  // Periods with actuals: the register, plus any month that already holds actual figures
+  // (e.g. a database seeded before ccp.periods existed — migration 003 does not backfill it),
+  // so a budget-only file can never silently wipe published actuals.
+  const periods = await tx.query<{ period: string }>(
+    `select period from ccp.periods
+     union
+     select distinct period from ccp.financials where actual is not null`,
+  );
+  const [{ now }] = await tx.query<{ now: string }>(`select to_char(now(), 'YYYY-MM') as now`);
+  const covered = await tx.query<{ period: string; ccs: string[] }>(
+    'select period, array_agg(distinct cc_code) as ccs from ccp.financials group by period',
+  );
+  const keys = await tx.query<{ k: string }>(
+    `select period || '|' || entity as k from ccp.periods
+     union
+     select distinct f.period || '|' || c.entity from ccp.financials f
+       join ccp.cost_centres c on c.cc_code = f.cc_code where f.actual is not null`,
+  );
+  return {
+    costCentres,
+    knownGlGroups: gl.map((g) => g.gl_group),
+    publishedPeriods: periods.map((p) => p.period),
+    publishedKeys: keys.map((k) => k.k),
+    currentPeriod: now,
+    existingCcsByPeriod: Object.fromEntries(covered.map((c) => [c.period, c.ccs])),
+  };
+}
+
+/** Entity of each cost centre, for splitting totals by legal entity. */
+function entityMap(ctx: FinancialsContext) {
+  const m = new Map(ctx.costCentres.map((c) => [c.cc_code, c.entity ?? 'ALL']));
+  return (cc: string) => m.get(cc) ?? 'ALL';
+}
+
+export interface ReconLine {
+  period: string;
+  entity: string;
+  currency: string;
+  actualTotal: number;
+  tbTotal: number | null;
+  difference: number | null;
+  matched: boolean;
+}
+
+export interface StageResult {
+  batchId: string;
+  kind: BatchKind;
+  status: 'Validated' | 'Rejected';
+  rowCount: number;
+  errors: Issue[];
+  warnings: Issue[];
+  summary: { created: number; updated: number; unchanged: number; periods?: PeriodSummary[]; runs?: AllocationRunSummary[] };
+}
+
+async function stageFinancials(tx: Tx, file: ParsedFile) {
+  if (file.rows.length > MAX_FINANCIAL_ROWS) throw new UploadError(`Too many rows (max ${MAX_FINANCIAL_ROWS}).`);
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors, warnings } = validateFinancials(file, ctx);
+  const periods = errors.length ? [] : summarizePeriods(records, entityMap(ctx));
+  return { errors, warnings, summary: { created: records.length, updated: 0, unchanged: 0, periods } };
+}
+
+async function loadAllocationsContext(tx: Tx): Promise<AllocationsContext> {
+  const costCentres = await tx.query<AllocationsContext['costCentres'][number]>(
+    'select cc_code, status, entity, type, close_date::text as close_date from ccp.cost_centres',
+  );
+  const [{ now }] = await tx.query<{ now: string }>(`select to_char(now(), 'YYYY-MM') as now`);
+  const actuals = await tx.query<{ k: string; total: string }>(
+    `select period || '|' || cc_code as k, sum(actual)::text as total from ccp.financials
+      where actual is not null group by period, cc_code`,
+  );
+  return { costCentres, currentPeriod: now, sourceActuals: Object.fromEntries(actuals.map((a) => [a.k, Number(a.total)])) };
+}
+
+async function stageAllocations(tx: Tx, file: ParsedFile) {
+  if (file.rows.length > MAX_ROWS) throw new UploadError(`Too many rows (max ${MAX_ROWS}).`);
+  const { records, errors, warnings } = validateAllocations(file, await loadAllocationsContext(tx));
+  const runs = errors.length ? [] : summarizeAllocations(records);
+  return { errors, warnings, summary: { created: records.length, updated: 0, unchanged: 0, runs } };
+}
+
+export async function stageUpload(tx: Tx, user: string, kind: BatchKind, fileName: string, data: Buffer): Promise<StageResult> {
+  const file = await parseUpload(fileName, data, TEMPLATES[kind].sheet);
+  let errors: Issue[];
+  let warnings: Issue[];
+  let summary: StageResult['summary'];
+  if (kind === 'financials') {
+    ({ errors, warnings, summary } = await stageFinancials(tx, file));
+  } else if (kind === 'allocations') {
+    ({ errors, warnings, summary } = await stageAllocations(tx, file));
+  } else {
+    if (file.rows.length > MAX_ROWS) throw new UploadError(`Too many rows (max ${MAX_ROWS}).`);
+    const v = runValidation(kind, file, await loadExisting(tx));
+    ({ errors, warnings } = v);
+    summary = errors.length ? { created: 0, updated: 0, unchanged: 0 } : await diffSummary(tx, kind, v.records);
+  }
+  const status = errors.length ? 'Rejected' : 'Validated';
+  // uploaded_by is the authenticated DB identity (normalised by ccp.app_email()), not the
+  // caller-supplied string: maker-checker compares it with ccp.app_email() at publish time,
+  // so a differently-cased or wrong `user` must not let the uploader approve their own file.
+  const [{ id }] = await tx.query<{ id: string }>(
+    `insert into ccp.upload_batches (kind, file_name, file_sha256, uploaded_by, status, row_count, error_count, payload, errors, summary)
+     values ($1,$2,$3,coalesce(ccp.app_email(), $4),$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb) returning id`,
+    [kind, fileName.slice(0, 200), crypto.createHash('sha256').update(data).digest('hex'), user, status,
+     file.rows.length, errors.length, JSON.stringify(file), JSON.stringify(errors), JSON.stringify({ ...summary, warnings })],
+  );
+  await tx.query(`select ccp.log_event($1, 'upload_batch', $2, $3::jsonb)`, [
+    errors.length ? 'UPLOAD_REJECTED' : 'UPLOAD_VALIDATED', id,
+    JSON.stringify({ kind, fileName, rows: file.rows.length, errors: errors.length }),
+  ]);
+  return { batchId: id, kind, status, rowCount: file.rows.length, errors, warnings, summary };
+}
+
+interface BatchRow {
+  kind: BatchKind;
+  status: string;
+  uploaded_by: string;
+  payload: ParsedFile;
+}
+
+async function lockBatch(tx: Tx, batchId: string): Promise<BatchRow> {
+  const [batch] = await tx.query<BatchRow>(
+    'select kind, status, uploaded_by, payload from ccp.upload_batches where id = $1 for update', [batchId],
+  );
+  if (!batch) throw new UploadError('Upload not found.');
+  if (batch.status !== 'Validated') throw new UploadError(`Upload is ${batch.status} and cannot be changed.`);
+  return batch;
+}
+
+async function currentUser(tx: Tx): Promise<string> {
+  const [{ email }] = await tx.query<{ email: string }>('select ccp.app_email() as email');
+  return email;
+}
+
+/** Compare uploaded CC actuals with the trial-balance totals stored for this batch. */
+async function reconcile(tx: Tx, batchId: string, periods: PeriodSummary[]): Promise<ReconLine[]> {
+  const tbRows = await tx.query<{ period: string; entity: string; tb_total: string }>(
+    'select period, entity, tb_total from ccp.trial_balances where batch_id = $1', [batchId],
+  );
+  const tb = new Map(tbRows.map((r) => [`${r.period}|${r.entity}`, Number(r.tb_total)]));
+  const tol = reconTolerance();
+  return periods
+    .filter((p) => p.actualTotal !== null)
+    .map((p) => {
+      const key = `${p.period}|${p.entity}`;
+      const tbTotal = tb.has(key) ? tb.get(key)! : null;
+      const difference = tbTotal === null ? null : Math.round((p.actualTotal! - tbTotal) * 100) / 100;
+      return {
+        period: p.period, entity: p.entity, currency: p.currency, actualTotal: p.actualTotal!, tbTotal, difference,
+        matched: difference !== null && Math.abs(difference) <= tol,
+      };
+    });
+}
+
+const reconLabel = (r: { period: string; entity: string }) => (r.entity === 'ALL' ? r.period : `${r.period} ${r.entity}`);
+
+/**
+ * Preparer (the uploader) enters the trial-balance total for each period and
+ * entity that has actuals. Keys are "YYYY-MM|ENTITY" (e.g. "2026-09|IN"); a bare
+ * "YYYY-MM" is accepted when only one entity has actuals in that period.
+ * Returns the reconciliation; does not publish.
+ */
+export async function enterTrialBalance(tx: Tx, batchId: string, totals: Record<string, number>) {
+  if (!makerCheckerEnabled()) await tx.query(`select set_config('app.maker_checker', 'off', true)`);
+  const batch = await lockBatch(tx, batchId);
+  if (batch.kind !== 'financials') throw new UploadError('Trial balance applies to Budget & Actuals uploads only.');
+  const me = await currentUser(tx);
+  if (makerCheckerEnabled() && batch.uploaded_by !== me)
+    throw new UploadError('Only the preparer who uploaded the file can enter the trial balance.');
+
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors } = validateFinancials(batch.payload, ctx);
+  if (errors.length)
+    throw new UploadError(`This file is no longer valid against the current data (${errors.length} error(s)). Discard it and upload again.`);
+  const periods = summarizePeriods(records, entityMap(ctx));
+  const needed = periods.filter((p) => p.actualTotal !== null);
+  for (const [rawKey, value] of Object.entries(totals)) {
+    const [period, entityIn] = rawKey.split('|');
+    const candidates = needed.filter((p) => p.period === period && (!entityIn || p.entity === entityIn.toUpperCase()));
+    if (candidates.length === 0)
+      throw new UploadError(`${entityIn ? `${period} ${entityIn}` : `Period ${period}`} has no actuals in this upload.`);
+    if (candidates.length > 1)
+      throw new UploadError(`${period} has actuals for several entities (${candidates.map((c) => c.entity).join(', ')}) — enter a trial balance for each entity.`);
+    const { entity } = candidates[0];
+    const label = reconLabel(candidates[0]);
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new UploadError(`Trial balance for ${label} must be a number.`);
+    if (Math.abs(value) >= MAX_AMOUNT) throw new UploadError(`Trial balance for ${label} is too large.`);
+    await tx.query(
+      `insert into ccp.trial_balances (batch_id, period, entity, tb_total, entered_by) values ($1, $2, $3, $4, ccp.app_email())
+       on conflict (batch_id, period, entity) do update set tb_total = excluded.tb_total, entered_by = excluded.entered_by, entered_at = now()`,
+      [batchId, period, entity, roundMoney(value)],
+    );
+  }
+  const recon = await reconcile(tx, batchId, periods);
+  const allMatched = recon.length > 0 && recon.every((r) => r.matched);
+  await tx.query(`update ccp.upload_batches set summary = summary || $2::jsonb where id = $1`, [
+    batchId, JSON.stringify({ reconciliation: recon, reconciled: allMatched }),
+  ]);
+  await tx.query(`select ccp.log_event('TB_ENTERED', 'upload_batch', $1, $2::jsonb)`, [batchId, JSON.stringify({ totals })]);
+  await tx.query(`select ccp.log_event($1, 'upload_batch', $2, $3::jsonb)`, [
+    allMatched ? 'RECON_PASSED' : 'RECON_FAILED', batchId, JSON.stringify({ reconciliation: recon }),
+  ]);
+  return { reconciliation: recon, reconciled: allMatched };
+}
+
+async function publishFinancials(tx: Tx, batchId: string, batch: BatchRow) {
+  const ctx = await loadFinancialsContext(tx);
+  const { records, errors } = validateFinancials(batch.payload, ctx);
+  if (errors.length) return { published: false as const, errors };
+  const periods = summarizePeriods(records, entityMap(ctx));
+
+  // The file replaces each (period, entity) it contains — other entities' figures for
+  // the same period are untouched, so each entity can close its month independently.
+  const scopeKeys = [...new Set(periods.map((p) => `${p.period}|${p.entity}`))];
+
+  // Stale-batch guard: never let an older upload overwrite a period/entity that was
+  // published after this file was prepared (older batches without an entity match by period).
+  const newer = await tx.query<{ scope: string }>(
+    `select distinct e->>'period' || coalesce(' ' || nullif(e->>'entity', 'ALL'), '') as scope
+       from ccp.upload_batches b, jsonb_array_elements(coalesce(b.summary->'periods', '[]'::jsonb)) e
+      where b.kind = 'financials' and b.status = 'Published' and b.id <> $1
+        and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
+        and ((e ? 'entity' and e->>'entity' <> 'ALL' and (e->>'period') || '|' || (e->>'entity') = any ($2))
+             or ((not e ? 'entity' or e->>'entity' = 'ALL') and e->>'period' = any ($3)))`,
+    [batchId, scopeKeys, [...new Set(periods.map((p) => p.period))]],
+  );
+  if (newer.length) {
+    return {
+      published: false as const,
+      errors: [] as Issue[],
+      error: `Publishing blocked: ${newer.map((n) => n.scope).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
+    };
+  }
+
+  const recon = await reconcile(tx, batchId, periods);
+  const blocked = recon.filter((r) => !r.matched);
+  if (blocked.length) {
+    await tx.query(`select ccp.log_event('RECON_FAILED', 'upload_batch', $1, $2::jsonb)`, [
+      batchId, JSON.stringify({ stage: 'publish', reconciliation: recon }),
+    ]);
+    return {
+      published: false as const,
+      errors: [] as Issue[],
+      reconciliation: recon,
+      error: `Publishing blocked: ${blocked.map((r) => (r.tbTotal === null ? `${reconLabel(r)} has no trial balance entered` : `${reconLabel(r)} differs from the trial balance by ${r.difference}`)).join('; ')}.`,
+    };
+  }
+
+  const before = await tx.query<{ period: string; entity: string; budget: string; actual: string | null }>(
+    `select f.period, c.entity, sum(f.budget)::text as budget, sum(f.actual)::text as actual
+       from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+      where f.period || '|' || c.entity = any ($1) group by f.period, c.entity order by 1, 2`, [scopeKeys],
+  );
+  const recordsJson = JSON.stringify(records satisfies FinancialRecord[]);
+  // Line-level history: every line this publish adds, changes or removes
+  const [{ n: changedLines }] = await tx.query<{ n: number }>(
+    `with o as (select f.cc_code, f.period, f.gl_group, f.budget, f.actual
+                  from ccp.financials f join ccp.cost_centres c on c.cc_code = f.cc_code
+                 where f.period || '|' || c.entity = any ($2)),
+          n as (select * from jsonb_to_recordset($3::jsonb) as r(cc_code text, period text, gl_group text, budget numeric, actual numeric)),
+          ins as (
+            insert into ccp.financials_history
+                   (batch_id, cc_code, period, gl_group, old_budget, old_actual, new_budget, new_actual, change, changed_by)
+            select $1, coalesce(o.cc_code, n.cc_code), coalesce(o.period, n.period), coalesce(o.gl_group, n.gl_group),
+                   o.budget, o.actual, n.budget, n.actual,
+                   case when o.cc_code is null then 'added' when n.cc_code is null then 'removed' else 'changed' end,
+                   ccp.app_email()
+              from o full outer join n
+                on o.cc_code = n.cc_code and o.period = n.period and o.gl_group = n.gl_group
+             where o.cc_code is null or n.cc_code is null
+                or o.budget is distinct from n.budget or o.actual is distinct from n.actual
+            returning 1)
+     select count(*)::int as n from ins`,
+    [batchId, scopeKeys, recordsJson],
+  );
+  await tx.query(
+    `delete from ccp.financials f using ccp.cost_centres c
+      where c.cc_code = f.cc_code and f.period || '|' || c.entity = any ($1)`,
+    [scopeKeys],
+  );
+  await tx.query(
+    `insert into ccp.financials (cc_code, period, gl_group, budget, actual)
+     select cc_code, period, gl_group, budget, actual
+       from jsonb_to_recordset($1::jsonb) as r(cc_code text, period text, gl_group text, budget numeric, actual numeric)`,
+    [recordsJson],
+  );
+  for (const r of recon) {
+    // The period is now reconciled entity by entity; drop any pre-Phase-3 combined row
+    await tx.query(`delete from ccp.periods where period = $1 and entity = 'ALL'`, [r.period]);
+    await tx.query(
+      `insert into ccp.periods (period, entity, actual_total, tb_total, batch_id, published_by, published_at)
+       values ($1, $2, $3, $4, $5, ccp.app_email(), now())
+       on conflict (period, entity) do update set actual_total = excluded.actual_total, tb_total = excluded.tb_total,
+         batch_id = excluded.batch_id, published_by = excluded.published_by, published_at = now()`,
+      [r.period, r.entity, r.actualTotal, r.tbTotal, batchId],
+    );
+  }
+  return {
+    published: true as const,
+    summary: { created: records.length, updated: 0, unchanged: 0, periods, reconciliation: recon, before, changedLines },
+  };
+}
+
+async function publishAllocations(tx: Tx, batchId: string, batch: BatchRow) {
+  const { records, errors } = validateAllocations(batch.payload, await loadAllocationsContext(tx));
+  if (errors.length) return { published: false as const, errors };
+  const runs = summarizeAllocations(records);
+  // Stale-batch guard: an older file must not overwrite a run published after it was prepared
+  const newer = await tx.query<{ run: string }>(
+    `select distinct (e->>'source_cc') || ' ' || (e->>'period') as run
+       from ccp.upload_batches b, jsonb_array_elements(coalesce(b.summary->'runs', '[]'::jsonb)) e
+      where b.kind = 'allocations' and b.status = 'Published' and b.id <> $1
+        and b.published_at > (select uploaded_at from ccp.upload_batches where id = $1)
+        and (e->>'period') || '|' || (e->>'source_cc') = any ($2)`,
+    [batchId, runs.map((r) => `${r.period}|${r.source_cc}`)],
+  );
+  if (newer.length) {
+    return {
+      published: false as const,
+      errors: [] as Issue[],
+      error: `Publishing blocked: the allocation run ${newer.map((n) => n.run).join(', ')} was published after this file was prepared. Discard it and upload a current file.`,
+    };
+  }
+  const recordsJson = JSON.stringify(records satisfies AllocationRecord[]);
+  // Replace each allocation run (period × source) the file contains; row triggers audit every change
+  const [{ n: removed }] = await tx.query<{ n: number }>(
+    `with runs as (select distinct period, source_cc from jsonb_to_recordset($1::jsonb) as r(period text, source_cc text)),
+          del as (delete from ccp.allocations a using runs
+                   where a.period = runs.period and a.source_cc = runs.source_cc returning 1)
+     select count(*)::int as n from del`,
+    [recordsJson],
+  );
+  await tx.query(
+    `insert into ccp.allocations (cc_code, period, source_cc, amount, basis)
+     select cc_code, period, source_cc, amount, basis
+       from jsonb_to_recordset($1::jsonb) as r(cc_code text, period text, source_cc text, amount numeric, basis text)`,
+    [recordsJson],
+  );
+  return { published: true as const, summary: { created: records.length, updated: 0, unchanged: 0, removed, runs } };
+}
+
+/**
+ * Publish a validated batch. Re-validates against the CURRENT master in the
+ * same transaction (someone may have changed data since staging) and only
+ * then upserts. Audit rows written by the triggers carry the batch id.
+ */
+export async function publishUpload(tx: Tx, batchId: string) {
+  // Tell the database-level segregation-of-duties trigger whether maker-checker is on
+  if (!makerCheckerEnabled()) await tx.query(`select set_config('app.maker_checker', 'off', true)`);
+  const batch = await lockBatch(tx, batchId);
+  const me = await currentUser(tx);
+  if (makerCheckerEnabled() && batch.uploaded_by === me)
+    throw new UploadError('Segregation of duties: a different Finance user must approve and publish this upload.');
+
+  if (batch.kind === 'allocations') {
+    const result = await publishAllocations(tx, batchId, batch);
+    if (result.published) await markPublished(tx, batchId, result.summary);
+    else if (result.errors.length) await markRejected(tx, batchId, result.errors);
+    return result;
+  }
+
+  if (batch.kind === 'financials') {
+    const result = await publishFinancials(tx, batchId, batch);
+    if (result.published) {
+      await markPublished(tx, batchId, result.summary);
+    } else if (result.errors.length) {
+      await markRejected(tx, batchId, result.errors);
+    }
+    return result;
+  }
+
+  const kind = batch.kind as MasterKind;
+  const { records, errors } = runValidation(kind, batch.payload, await loadExisting(tx));
+  if (errors.length) {
+    await markRejected(tx, batchId, errors);
+    return { published: false as const, errors };
+  }
+  const summary = await diffSummary(tx, kind, records);
+
+  if (kind === 'master') {
+    for (const r of records as MasterRecord[]) {
+      await tx.query(
+        `insert into ccp.cost_centres (cc_code, cc_alias, entity, bu, department, type, keywords, status, start_date, close_date)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         on conflict (cc_code) do update set cc_alias = excluded.cc_alias, entity = excluded.entity, bu = excluded.bu,
+           department = excluded.department, type = excluded.type, keywords = excluded.keywords, status = excluded.status,
+           start_date = excluded.start_date, close_date = excluded.close_date`,
+        [r.cc_code, r.cc_alias, r.entity, r.bu, r.department, r.type, r.keywords, r.status, r.start_date, r.close_date],
+      );
+    }
+  } else {
+    for (const r of records as OwnerRecord[]) {
+      await tx.query(
+        `insert into ccp.cc_owners (cc_code, owner_name, owner_email, backup_owner_email, bu_head_email)
+         values ($1,$2,$3,$4,$5)
+         on conflict (cc_code) do update set owner_name = excluded.owner_name, owner_email = excluded.owner_email,
+           backup_owner_email = excluded.backup_owner_email, bu_head_email = excluded.bu_head_email`,
+        [r.cc_code, r.owner_name, r.owner_email, r.backup_owner_email, r.bu_head_email],
+      );
+    }
+  }
+  await markPublished(tx, batchId, summary);
+  return { published: true as const, summary };
+}
+
+async function markRejected(tx: Tx, batchId: string, errors: Issue[]) {
+  await tx.query(`update ccp.upload_batches set status = 'Rejected', errors = $2::jsonb, error_count = $3 where id = $1`,
+    [batchId, JSON.stringify(errors), errors.length]);
+  await tx.query(`select ccp.log_event('UPLOAD_REJECTED', 'upload_batch', $1, $2::jsonb)`,
+    [batchId, JSON.stringify({ stage: 'publish', errors: errors.length })]);
+}
+
+async function markPublished(tx: Tx, batchId: string, summary: object) {
+  await tx.query(
+    `update ccp.upload_batches set status = 'Published', published_at = now(), published_by = ccp.app_email(),
+       approved_by = ccp.app_email(), summary = summary || $2::jsonb where id = $1`,
+    [batchId, JSON.stringify(summary)],
+  );
+  await tx.query(`select ccp.log_event('UPLOAD_PUBLISHED', 'upload_batch', $1, $2::jsonb)`, [batchId, JSON.stringify(summary)]);
+}
+
+export interface PendingBatch {
+  id: string;
+  kind: BatchKind;
+  file_name: string;
+  file_sha256: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  row_count: number;
+  summary: StageResult['summary'] & { warnings?: Issue[]; reconciliation?: ReconLine[]; reconciled?: boolean };
+}
+
+export { currencyOf };
+
+/** Validated uploads waiting for approval (Finance only via RLS). */
+export async function pendingBatches(tx: Tx): Promise<PendingBatch[]> {
+  return tx.query<PendingBatch>(
+    `select id, kind, file_name, file_sha256, uploaded_by, to_char(uploaded_at, 'DD Mon YYYY HH24:MI') as uploaded_at,
+            row_count, summary
+       from ccp.upload_batches where status = 'Validated' order by uploaded_at desc limit 20`,
+  );
+}
+
+export async function discardUpload(tx: Tx, batchId: string) {
+  const rows = await tx.query(`update ccp.upload_batches set status = 'Discarded' where id = $1 and status = 'Validated' returning id`, [batchId]);
+  if (rows.length) await tx.query(`select ccp.log_event('UPLOAD_DISCARDED', 'upload_batch', $1)`, [batchId]);
+  return rows.length > 0;
+}

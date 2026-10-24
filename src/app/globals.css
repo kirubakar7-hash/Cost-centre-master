@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* SolidPro brand manual: Blue 70% / Red 20% / Grey 10% */
+@theme {
+  --color-brand: #16469d;
+  --color-brand-dark: #0f3274;
+  --color-brand-light: #4f7fd6;
+  --color-accent: #e01a22;
+  --color-muted: #939597;
+  --font-sans: var(--font-maven), 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+:root {
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --text: #1b2333;
+  --border: #e3e6ec;
+  color-scheme: light;
+}
+.dark {
+  --bg: #0d1424;
+  --surface: #151f35;
+  --text: #e8ecf4;
+  --border: #26324d;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.border-theme {
+  border-color: var(--border);
+}
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-dark focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-light disabled:opacity-50;
+}
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md border border-brand px-4 py-2 text-sm font-semibold text-brand transition hover:bg-brand/10 dark:border-brand-light dark:text-brand-light;
+}
+.heading {
+  @apply font-semibold text-brand dark:text-brand-light;
+}
