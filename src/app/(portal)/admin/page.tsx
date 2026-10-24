@@ -61,7 +61,7 @@ export default async function AdminPage() {
           <h1 className="heading text-2xl">Admin — Cost Centre Master</h1>
           <p className="text-sm text-muted">Single source of truth for cost centres and owner mapping. Finance only.</p>
         </div>
-        <Link href="/admin/audit" className="btn-secondary">Audit log & failed searches</Link>
+        <Link href="/admin/reports" className="btn-secondary">Reports &amp; audit</Link>
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

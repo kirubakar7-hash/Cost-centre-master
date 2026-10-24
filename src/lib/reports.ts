@@ -212,7 +212,7 @@ export async function auditLog(
   const rows = await tx.query<AuditRow>(
     `select id, ${UTC_TS('ts')} as ts, user_email, action, entity, entity_id, old_value, new_value, batch_id::text as batch_id
        from ccp.audit_log ${AUDIT_WHERE}
-      order by ts desc, id desc
+      order by audit_log.ts desc, audit_log.id desc   -- the column, not the formatted "ts" alias
       limit $7 offset $8`,
     [...params, limit, offset],
   );
@@ -542,7 +542,7 @@ export async function uploadBatchDetail(tx: Tx, id: string, opts: { historyLimit
     `select id, ${UTC_TS('ts')} as ts, user_email, action, entity, entity_id, old_value, new_value, batch_id::text as batch_id
        from ccp.audit_log
       where batch_id = $1::uuid or (entity = 'upload_batch' and entity_id = $1::text)
-      order by ts, id
+      order by audit_log.ts, audit_log.id
       limit $2`,
     [id, EXPORT_CAP],
   );
@@ -1023,7 +1023,7 @@ export async function failedSearches(
   const events = opts.withEvents
     ? await tx.query<FailedSearchEvent>(
         `select ${UTC_TS('ts')} as ts, user_email, term from ccp.failed_searches ${FS_WHERE}
-          order by ts desc, id desc limit $3`,
+          order by failed_searches.ts desc, failed_searches.id desc limit $3`,
         [f.from, f.to, EXPORT_CAP],
       )
     : [];
@@ -1056,7 +1056,7 @@ export const describeAccessFilters = (f: AccessFilters): FilterLines => [
   ['User contains', f.user ?? 'Any'],
   ['Role', f.role ? ROLE_LABELS[f.role] : 'Any'],
   ['Business unit', f.bu ? `${f.bu} (plus company-wide grants)` : 'Any'],
-  ['Rows', f.exceptionsOnly ? 'Exceptions only' : 'All'],
+  ['Show', f.exceptionsOnly ? 'Exceptions only' : 'All access rights'],
 ];
 
 export const describeCoverageFilters = (r: CoverageReport): FilterLines => [

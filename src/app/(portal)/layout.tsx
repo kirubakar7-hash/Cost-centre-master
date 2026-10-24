@@ -14,6 +14,7 @@ export default async function PortalLayout({ children }: { children: React.React
     { href: '/', label: 'Cost Centre Finder', show: true },
     { href: '/my', label: 'My Cost Centres', show: user.primaryRole !== 'Employee' },
     { href: '/admin', label: 'Admin', show: user.isFinance },
+    { href: '/admin/reports', label: 'Reports', show: user.isFinance },
   ];
   return (
     <div className="flex min-h-screen flex-col">

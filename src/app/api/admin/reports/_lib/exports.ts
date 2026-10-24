@@ -21,6 +21,7 @@ import {
   describeFailedSearchFilters,
   describeUploadFilters,
   failedSearches,
+  isAlertAction,
   kindLabel,
   parseAccessFilters,
   parseAuditFilters,
@@ -82,7 +83,7 @@ const auditRow = (a: AuditRow): Record<string, Cell> => ({
   old_value: json(a.old_value),
   new_value: json(a.new_value),
 });
-const alertAction = (r: Record<string, Cell>) => (/DENIED|REJECTED|FAILED|DEACTIVATE|DELETE/.test(String(r.action)) ? ['action'] : []);
+const alertAction = (r: Record<string, Cell>) => (isAlertAction(String(r.action)) ? ['action'] : []);
 
 const REGISTER_COLUMNS: Column[] = [
   { header: 'Batch id', key: 'id', width: 38 },
